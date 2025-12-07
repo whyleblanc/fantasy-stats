@@ -1,10 +1,10 @@
 from analysis import (
     get_league,
-    compute_week_zscores_for_api,
-    compute_season_zscores_for_api,
-    compute_team_history_for_api,
-    compute_week_power_for_api,
-    compute_season_power_for_api,
+    get_week_zscores_cached,
+    get_season_zscores_cached,
+    get_team_history_cached,
+    get_week_power_cached,
+    get_season_power_cached,
 )
 from db import init_db
 
@@ -13,6 +13,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from functools import lru_cache
 import os
+import copy
 
 # Load secrets from .env
 load_dotenv()
@@ -34,6 +35,56 @@ MAX_YEAR = 2026  # allow up to 2026 in UI/API
 
 
 # ---------- Helper functions ----------
+def derive_current_week(league) -> int:
+    """
+    Derive the current matchup week with reasonable fallbacks.
+    Uses the same logic you already have in /api/meta.
+    """
+    # --- derive max weeks for this year ---
+    try:
+        max_week = (
+            getattr(league.settings, "matchup_period_count", None)
+            or getattr(
+                league.settings,
+                "regular_season_matchup_period_count",
+                None,
+            )
+            or 22
+        )
+    except Exception:
+        max_week = 22
+
+    # --- derive current matchup week, with fallbacks ---
+    current_week = None
+    for attr in ("current_week", "currentMatchupPeriod", "currentWeek"):
+        cw = getattr(league, attr, None)
+        if isinstance(cw, int) and 1 <= cw <= max_week:
+            current_week = cw
+            break
+
+    if current_week is None:
+        # Fallback: find last completed / non-empty scoreboard week
+        current_week = 1
+        try:
+            for w in range(1, max_week + 1):
+                sb = league.scoreboard(w)
+                if not sb:  # empty / future week
+                    current_week = max(1, w - 1)
+                    break
+            else:
+                # all weeks have data
+                current_week = max_week
+        except Exception:
+            # if ESPN explodes, just use max_week
+            current_week = max_week
+
+    # Clamp just in case
+    if current_week < 1:
+        current_week = 1
+    if current_week > max_week:
+        current_week = max_week
+
+    return current_week, max_week
 
 def format_owners(team) -> str:
     """Safely format owners from whatever espn_api gives us."""
@@ -72,6 +123,9 @@ def build_league_payload(year: int) -> dict:
     """Return a dict with league + team data for a given year."""
     league = get_league(year)
 
+    # Get currentWeek for this league/year
+    current_week, _ = derive_current_week(league)
+
     teams = []
     for t in league.teams:
         teams.append(
@@ -88,7 +142,7 @@ def build_league_payload(year: int) -> dict:
             }
         )
 
-    # Sort by finalStanding if present, otherwise leave as-is
+    # Sort by finalStanding if present
     if any(team["finalStanding"] for team in teams):
         teams.sort(
             key=lambda x: x["finalStanding"]
@@ -101,6 +155,7 @@ def build_league_payload(year: int) -> dict:
         "leagueName": league.settings.name,
         "year": year,
         "teamCount": len(teams),
+        "currentWeek": current_week,
         "teams": teams,
     }
     return payload
@@ -151,43 +206,48 @@ def api_health():
 @app.route("/api/meta")
 def meta_api():
     """
-    Return selectable options for frontend dropdowns.
-
-    Optional query:
+    Return selectable options + live context for frontend dropdowns:
+      GET /api/meta
       GET /api/meta?year=2025
 
     Response:
     {
-      "years": [2014, ..., 2026],
+      "years": [2019, 2020, ..., 2025],
       "year": 2025,
-      "weeks": [1, 2, 3, ...]  # only weeks that actually exist
+      "weeks": [1, 2, ..., max_week],
+      "currentWeek": 12,
+      "leagueName": "My League",
+      "teamCount": 12
     }
     """
-    # All league years (configured)
-    years = list(range(MIN_YEAR, MAX_YEAR + 1))
-
-    # Which year are we asking about?
-    year = request.args.get("year", type=int)
-    if year is None:
-        year = max(years)
-
-    # Clamp to allowed range
-    year = max(MIN_YEAR, min(MAX_YEAR, year))
-
     try:
-        weeks = get_available_weeks(year)
+        # Requested year (or default to MAX_YEAR)
+        year = request.args.get("year", default=MAX_YEAR, type=int)
+        if year < MIN_YEAR:
+            year = MIN_YEAR
+        if year > MAX_YEAR:
+            year = MAX_YEAR
+
+        league = get_league(year)
+
+        # Use helper to figure out currentWeek + maxWeek
+        current_week, max_week = derive_current_week(league)
+        weeks = list(range(1, max_week + 1))
+
+        years = list(range(MIN_YEAR, MAX_YEAR + 1))
+
+        return jsonify(
+            {
+                "years": years,
+                "year": year,
+                "weeks": weeks,
+                "currentWeek": current_week,
+                "leagueName": league.settings.name,
+                "teamCount": len(league.teams),
+            }
+        )
     except Exception as e:
-        weeks = []
-        print(f"[meta_api] Failed to get weeks for {year}: {e}")
-
-    return jsonify(
-        {
-            "years": years,
-            "year": int(year),
-            "weeks": weeks,
-        }
-    )
-
+        return jsonify({"error": str(e)}), 500
 
 # ---------- Core league info ----------
 
@@ -226,14 +286,13 @@ def league_api():
 @app.route("/api/analysis/season-zscores")
 def season_zscores_api():
     """
-    Example:
-      GET /api/analysis/season-zscores?year=2025
-    Returns all weeks for that year with team stats + z-scores.
+    GET /api/analysis/season-zscores?year=2025[&refresh=1]
     """
     year = request.args.get("year", default=2025, type=int)
+    refresh = request.args.get("refresh", default=0, type=int) == 1
 
     try:
-        payload = compute_season_zscores_for_api(year)
+        payload = get_season_zscores_cached(year, force_refresh=refresh)
         return jsonify(payload)
     except Exception as e:
         return (
@@ -251,12 +310,11 @@ def season_zscores_api():
 @app.route("/api/analysis/team-history")
 def team_history_api():
     """
-    Example:
-      GET /api/analysis/team-history?year=2025&teamId=3
-    Returns this team's per-week stats + z-scores.
+    GET /api/analysis/team-history?year=2025&teamId=3[&refresh=1]
     """
     year = request.args.get("year", default=2025, type=int)
     team_id = request.args.get("teamId", type=int)
+    refresh = request.args.get("refresh", default=0, type=int) == 1
 
     if team_id is None:
         return (
@@ -270,7 +328,7 @@ def team_history_api():
         )
 
     try:
-        payload = compute_team_history_for_api(year, team_id)
+        payload = get_team_history_cached(year, team_id, force_refresh=refresh)
         return jsonify(payload)
     except Exception as e:
         return (
@@ -289,15 +347,14 @@ def team_history_api():
 @app.route("/api/analysis/week-zscores")
 def week_zscores_api():
     """
-    Example:
-      GET /api/analysis/week-zscores?year=2025&week=7
-    Returns z-scores for each team for that matchup week.
+    GET /api/analysis/week-zscores?year=2025&week=7[&refresh=1]
     """
     year = request.args.get("year", default=2025, type=int)
     week = request.args.get("week", default=1, type=int)
+    refresh = request.args.get("refresh", default=0, type=int) == 1
 
     try:
-        payload = compute_week_zscores_for_api(year, week)
+        payload = get_week_zscores_cached(year, week, force_refresh=refresh)
         return jsonify(payload)
     except Exception as e:
         return (
@@ -316,16 +373,17 @@ def week_zscores_api():
 @app.route("/api/analysis/week-power")
 def week_power_api():
     """
-    Example:
-      GET /api/analysis/week-power?year=2025&week=1
-
-    Returns power rankings (total z) for that week.
+    GET /api/analysis/week-power?year=2025&week=1[&refresh=1]
     """
     year = request.args.get("year", default=2025, type=int)
     week = request.args.get("week", default=1, type=int)
+    refresh = request.args.get("refresh", default=0, type=int) == 1
 
     try:
-        payload = compute_week_power_for_api(year, week)
+        # If you want to be extra safe about mutating cached data:
+        # raw = get_week_power_cached(year, week, force_refresh=refresh)
+        # payload = copy.deepcopy(raw)
+        payload = get_week_power_cached(year, week, force_refresh=refresh)
 
         # attach owners
         try:
@@ -339,6 +397,7 @@ def week_power_api():
                 t["owners"] = owners_map.get(tid)
 
         return jsonify(payload)
+
     except Exception as e:
         return (
             jsonify(
@@ -356,17 +415,14 @@ def week_power_api():
 @app.route("/api/analysis/season-power")
 def season_power_api():
     """
-    Example:
-      GET /api/analysis/season-power?year=2025
-
-    Returns season-long power rankings for that year.
+    GET /api/analysis/season-power?year=2025[&refresh=1]
     """
     year = request.args.get("year", default=2025, type=int)
+    refresh = request.args.get("refresh", default=0, type=int) == 1
 
     try:
-        payload = compute_season_power_for_api(year)
+        payload = get_season_power_cached(year, force_refresh=refresh)
 
-        # attach owners
         try:
             owners_map = build_owners_map(year)
         except Exception:

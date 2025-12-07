@@ -1,17 +1,20 @@
 # Python
+.venv/
+venv/
 __pycache__/
 *.pyc
 
-# Flask artifacts
-instance/
-.env
-
 # Node / React
 node_modules/
-build/
 dist/
+frontend/node_modules/
+frontend/dist/
 
-# VSCode / OS
+# Environment / secrets
+.env
+*.env
+
+# OS / editor junk
+.DS_Store
+.idea/
 .vscode/
-.DS_Storefantasy_stats.db
-fantasy_stats.db

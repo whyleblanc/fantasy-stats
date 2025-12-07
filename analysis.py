@@ -52,6 +52,71 @@ def get_league(year: int) -> League:
         espn_s2=ESPN_S2,
     )
 
+# ---- Simple in-process caches for heavy computations ----
+
+from typing import Dict, Tuple, Any
+
+# key = (year, week) etc.
+_WEEK_POWER_CACHE: Dict[Tuple[int, int], Any] = {}
+_SEASON_POWER_CACHE: Dict[int, Any] = {}
+_WEEK_ZS_CACHE: Dict[Tuple[int, int], Any] = {}
+_SEASON_ZS_CACHE: Dict[int, Any] = {}
+_TEAM_HISTORY_CACHE: Dict[Tuple[int, int], Any] = {}
+
+
+def get_week_power_cached(year: int, week: int, force_refresh: bool = False) -> dict:
+    """
+    Return week power rankings for (year, week) with in-process caching.
+    """
+    key = (year, week)
+    if force_refresh or key not in _WEEK_POWER_CACHE:
+        payload = compute_week_power_for_api(year, week)
+        _WEEK_POWER_CACHE[key] = payload
+    return _WEEK_POWER_CACHE[key]
+
+
+def get_season_power_cached(year: int, force_refresh: bool = False) -> dict:
+    """
+    Return season power rankings for a year, cached.
+    """
+    if force_refresh or year not in _SEASON_POWER_CACHE:
+        payload = compute_season_power_for_api(year)
+        _SEASON_POWER_CACHE[year] = payload
+    return _SEASON_POWER_CACHE[year]
+
+
+def get_week_zscores_cached(year: int, week: int, force_refresh: bool = False) -> dict:
+    """
+    Return per-week z-scores for a given week, cached.
+    """
+    key = (year, week)
+    if force_refresh or key not in _WEEK_ZS_CACHE:
+        payload = compute_week_zscores_for_api(year, week)
+        _WEEK_ZS_CACHE[key] = payload
+    return _WEEK_ZS_CACHE[key]
+
+
+def get_season_zscores_cached(year: int, force_refresh: bool = False) -> dict:
+    """
+    Return all-season z-scores for a given year, cached.
+    """
+    if force_refresh or year not in _SEASON_ZS_CACHE:
+        payload = compute_season_zscores_for_api(year)
+        _SEASON_ZS_CACHE[year] = payload
+    return _SEASON_ZS_CACHE[year]
+
+
+def get_team_history_cached(
+    year: int, team_id: int, force_refresh: bool = False
+) -> dict:
+    """
+    Return per-week history for a team (year, team_id), cached.
+    """
+    key = (year, team_id)
+    if force_refresh or key not in _TEAM_HISTORY_CACHE:
+        payload = compute_team_history_for_api(year, team_id)
+        _TEAM_HISTORY_CACHE[key] = payload
+    return _TEAM_HISTORY_CACHE[key]
 
 # -----------------------
 # EXISTING: player-level

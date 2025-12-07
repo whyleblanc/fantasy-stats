@@ -18,3 +18,5 @@ frontend/dist/
 .DS_Store
 .idea/
 .vscode/
+
+fantasy_stats.db

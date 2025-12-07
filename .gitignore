@@ -20,3 +20,5 @@ frontend/dist/
 .vscode/
 
 fantasy_stats.db
+db.py
+*.db

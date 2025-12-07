@@ -3,6 +3,18 @@ import "./App.css";
 
 const API_BASE = "http://127.0.0.1:5001";
 
+const buildUrl = (path, params = {}) => {
+  const search = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") return;
+    search.set(key, String(value).trim());
+  });
+
+  const qs = search.toString();
+  return `${API_BASE}${path}${qs ? `?${qs}` : ""}`;
+};
+
 const CATEGORIES = ["FG%", "FT%", "3PM", "REB", "AST", "STL", "BLK", "DD", "PTS"];
 
 const thStyle = {
@@ -21,7 +33,7 @@ const tdStyle = {
   borderBottom: "1px solid #1e293b",
 };
 
-function renderZCell(z) {
+function renderZCell(z, key) {
   const value = Number.isFinite(z) ? z : 0;
   let bg = "transparent";
   let color = "#e5e7eb";
@@ -39,7 +51,7 @@ function renderZCell(z) {
   }
 
   return (
-    <td style={{ ...tdStyle, background: bg, color }}>
+    <td key={key} style={{ ...tdStyle, background: bg, color }}>
       {value.toFixed(2)}
     </td>
   );
@@ -64,46 +76,57 @@ function SortHeader({ label, field, sortField, sortDirection, onSort }) {
 function TeamHistoryChart({ history, selectedCategory }) {
   if (!history || history.length === 0) return null;
 
-  const points = [];
+  let rawPoints = [];
   let label = "";
 
   if (selectedCategory === "RANK") {
     label = "Weekly Rank (lower is better)";
     history.forEach((h) => {
-      if (h.rank != null) {
-        points.push({ x: h.week, y: h.rank });
+      if (h.rank != null && Number.isFinite(Number(h.rank))) {
+        rawPoints.push({ x: Number(h.week), y: Number(h.rank) });
       }
     });
-    if (points.length === 0) return null;
   } else if (selectedCategory === "TOTAL") {
     label = "Total Z-score per week";
     history.forEach((h) => {
-      const y = typeof h.totalZ === "number" ? h.totalZ : 0;
-      points.push({ x: h.week, y });
+      const weekNum = Number(h.week);
+      const y =
+        typeof h.totalZ === "number" && Number.isFinite(h.totalZ)
+          ? h.totalZ
+          : 0;
+      if (Number.isFinite(weekNum)) {
+        rawPoints.push({ x: weekNum, y });
+      }
     });
   } else {
     const key = `${selectedCategory}_z`;
     label = `${selectedCategory} Z-score per week`;
     history.forEach((h) => {
+      const weekNum = Number(h.week);
       const zs = h.zscores || {};
       const v = zs[key];
-      if (typeof v === "number") {
-        points.push({ x: h.week, y: v });
+      if (Number.isFinite(weekNum) && typeof v === "number" && Number.isFinite(v)) {
+        rawPoints.push({ x: weekNum, y: v });
       }
     });
-    if (points.length === 0) return null;
   }
 
+  const points = rawPoints.filter(
+    (p) => Number.isFinite(p.x) && Number.isFinite(p.y)
+  );
   if (points.length === 0) return null;
 
-  const minX = Math.min(...points.map((p) => p.x));
-  const maxX = Math.max(...points.map((p) => p.x));
-  let minY = Math.min(...points.map((p) => p.y));
-  let maxY = Math.max(...points.map((p) => p.y));
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  let minY = Math.min(...ys);
+  let maxY = Math.max(...ys);
 
   if (selectedCategory === "RANK") {
     minY = 1;
-    maxY = Math.max(...points.map((p) => p.y));
+    maxY = Math.max(...ys);
   } else if (minY === maxY) {
     minY -= 1;
     maxY += 1;
@@ -144,7 +167,6 @@ function TeamHistoryChart({ history, selectedCategory }) {
           borderRadius: 8,
         }}
       >
-        {/* axes */}
         <line
           x1={padding}
           y1={height - padding}
@@ -161,11 +183,7 @@ function TeamHistoryChart({ history, selectedCategory }) {
           stroke="#334155"
           strokeWidth="1"
         />
-
-        {/* line */}
         <path d={linePath} fill="none" stroke="#38bdf8" strokeWidth="2" />
-
-        {/* points */}
         {points.map((p, idx) => {
           const x = xScale(p.x);
           const y = yScale(p.y);
@@ -205,8 +223,8 @@ function App() {
   const [teamHistory, setTeamHistory] = useState(null);
 
   // History / awards (multi-year)
-  const [awardsByYear, setAwardsByYear] = useState([]); // [{year, champion,...}]
-  const [multiSeasonTeams, setMultiSeasonTeams] = useState([]); // aggregated team history across seasons
+  const [awardsByYear, setAwardsByYear] = useState([]);
+  const [multiSeasonTeams, setMultiSeasonTeams] = useState([]);
 
   // ----- Loading / error -----
   const [loadingMeta, setLoadingMeta] = useState(false);
@@ -226,7 +244,6 @@ function App() {
       setSortDirection((prev) => (prev === "ASC" ? "DESC" : "ASC"));
     } else {
       setSortField(field);
-      // default direction per field
       if (field === "RANK") {
         setSortDirection("ASC"); // 1 is best
       } else {
@@ -260,52 +277,38 @@ function App() {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Meta error: ${res.status}`);
       const data = await res.json();
-      setMeta((prev) => ({ ...prev, ...data }));
-
-      if (!year) setYear(data.year);
-      if (data.currentWeek && (!week || !data.weeks?.includes(week))) {
-        setWeek(data.currentWeek);
-      }
+      setMeta(data);
+      return data;
     } catch (e) {
       console.error(e);
       setError(e.message);
+      return null;
     } finally {
       setLoadingMeta(false);
     }
   };
 
-  const fetchLeague = async (y) => {
-    if (!y) return;
-    setLoadingLeague(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/league?year=${y}`);
-      if (!res.ok) throw new Error(`League error: ${res.status}`);
-      const data = await res.json();
-      setLeagueInfo(data);
-    } catch (e) {
-      console.error(e);
-      setError(e.message);
-      setLeagueInfo(null);
-    } finally {
-      setLoadingLeague(false);
-    }
-  };
-
   const fetchWeekPower = async (y, w) => {
-    if (!y || !w) return;
+    if (y == null || w == null || y === "" || w === "") return;
+
     setLoadingWeek(true);
     setError(null);
+
     try {
-      const res = await fetch(
-        `${API_BASE}/api/analysis/week-power?year=${y}&week=${w}`
-      );
+      const url = buildUrl("/api/analysis/week-power", {
+        year: y,
+        week: w,
+      });
+
+      console.log("fetchWeekPower →", url);
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`Week power error: ${res.status}`);
+
       const data = await res.json();
       setWeekPower(data);
     } catch (e) {
-      console.error(e);
-      setError(e.message);
+      console.error("fetchWeekPower failed", e);
+      setError(e.message || "Week power error");
       setWeekPower(null);
     } finally {
       setLoadingWeek(false);
@@ -313,22 +316,48 @@ function App() {
   };
 
   const fetchSeasonPower = async (y) => {
-    if (!y) return;
+    if (y == null || y === "") return;
+
     setLoadingSeason(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/analysis/season-power?year=${y}`
-      );
+      const url = buildUrl("/api/analysis/season-power", { year: y });
+
+      console.log("fetchSeasonPower →", url);
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`Season power error: ${res.status}`);
+
       const data = await res.json();
       setSeasonPower(data);
     } catch (e) {
-      console.error(e);
-      setError(e.message);
+      console.error("fetchSeasonPower failed", e);
+      setError(e.message || "Season power error");
       setSeasonPower(null);
     } finally {
       setLoadingSeason(false);
+    }
+  };
+
+  const fetchLeague = async (y) => {
+    if (y == null || y === "") return;
+
+    setLoadingLeague(true);
+    setError(null);
+    try {
+      const url = buildUrl("/api/league", { year: y });
+
+      console.log("fetchLeague →", url);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`League error: ${res.status}`);
+
+      const data = await res.json();
+      setLeagueInfo(data);
+    } catch (e) {
+      console.error("fetchLeague failed", e);
+      setError(e.message || "League error");
+      setLeagueInfo(null);
+    } finally {
+      setLoadingLeague(false);
     }
   };
 
@@ -337,18 +366,24 @@ function App() {
       setTeamHistory(null);
       return;
     }
+
     setLoadingHistory(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/analysis/team-history?year=${y}&teamId=${teamId}`
-      );
+      const url = buildUrl("/api/analysis/team-history", {
+        year: y,
+        teamId,
+      });
+
+      console.log("fetchTeamHistory →", url);
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`Team history error: ${res.status}`);
+
       const data = await res.json();
       setTeamHistory(data);
     } catch (e) {
-      console.error(e);
-      setError(e.message);
+      console.error("fetchTeamHistory failed", e);
+      setError(e.message || "Team history error");
       setTeamHistory(null);
     } finally {
       setLoadingHistory(false);
@@ -361,7 +396,7 @@ function App() {
     setError(null);
 
     const awards = [];
-    const teamHistoryAgg = {}; // key: teamName
+    const teamHistoryAgg = {};
 
     for (const y of meta.years) {
       try {
@@ -369,14 +404,12 @@ function App() {
           `${API_BASE}/api/analysis/season-power?year=${y}`
         );
         if (!res.ok) {
-          // skip broken years
           continue;
         }
         const data = await res.json();
         const teams = data?.teams || [];
         if (!teams.length) continue;
 
-        // sort by rank (if provided), then avgTotalZ
         const sortedByRank = [...teams].sort((a, b) => {
           const ra = a.rank ?? 999;
           const rb = b.rank ?? 999;
@@ -425,7 +458,6 @@ function App() {
             : null,
         });
 
-        // accumulate multi-season stats by teamName
         for (const t of teams) {
           const key = t.teamName || `Team ${t.teamId}`;
           if (!teamHistoryAgg[key]) {
@@ -470,11 +502,9 @@ function App() {
         }
       } catch (e) {
         console.error(`Failed loading season-power for year ${y}`, e);
-        // skip year
       }
     }
 
-    // finalize multi-season teams
     const multiTeams = Object.values(teamHistoryAgg).map((agg) => {
       const avgRank =
         agg.ranks.length > 0
@@ -502,61 +532,80 @@ function App() {
     });
 
     multiTeams.sort((a, b) => {
-      // best overall avgZ across seasons
       return (b.avgZAcrossSeasons ?? 0) - (a.avgZAcrossSeasons ?? 0);
     });
 
-    setAwardsByYear(
-      awards.sort((a, b) => (a.year ?? 0) - (b.year ?? 0))
-    );
+    setAwardsByYear(awards.sort((a, b) => (a.year ?? 0) - (b.year ?? 0)));
     setMultiSeasonTeams(multiTeams);
     setLoadingAwards(false);
   };
 
   // ----- Effects -----
-
-  // Initial meta load
   useEffect(() => {
-    fetchMeta();
+    const bootstrap = async () => {
+      const data = await fetchMeta();
+      if (!data) return;
+
+      const y = data.year;
+      if (y) setYear(y);
+
+      const weeks = data.weeks || [];
+      if (!weeks.length) {
+        setWeek(null);
+        return;
+      }
+
+      let defaultWeek =
+        data.currentWeek && weeks.includes(data.currentWeek)
+          ? data.currentWeek
+          : weeks[weeks.length - 1];
+
+      setWeek(defaultWeek);
+    };
+
+    bootstrap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When meta updated, align year/week + fetch data
-  useEffect(() => {
-    if (!meta.year) return;
-    if (!meta.weeks || meta.weeks.length === 0) return;
-
-    const effectiveYear = meta.year;
-    setYear((prev) => prev || effectiveYear);
-
-    const preferredWeek =
-      meta.currentWeek && meta.weeks.includes(meta.currentWeek)
-        ? meta.currentWeek
-        : meta.weeks[meta.weeks.length - 1];
-
-    setWeek((prev) =>
-      prev && meta.weeks.includes(prev) ? prev : preferredWeek
-    );
-
-    fetchWeekPower(effectiveYear, preferredWeek);
-    fetchSeasonPower(effectiveYear);
-    fetchLeague(effectiveYear);
-  }, [meta.year, meta.currentWeek, meta.weeks]);
-
-  // When year changes via UI, refresh meta + season/league
   useEffect(() => {
     if (!year) return;
-    fetchMeta(year);
-    fetchSeasonPower(year);
-    fetchLeague(year);
+
+    const loadYear = async () => {
+      const data = await fetchMeta(year);
+      if (!data) return;
+
+      const weeks = data.weeks || [];
+      if (!weeks.length) {
+        setWeek(null);
+        setWeekPower(null);
+        setSeasonPower(null);
+        setLeagueInfo(null);
+        return;
+      }
+
+      let w = week;
+      if (!w || !weeks.includes(w)) {
+        w =
+          data.currentWeek && weeks.includes(data.currentWeek)
+            ? data.currentWeek
+            : weeks[weeks.length - 1];
+        setWeek(w);
+      }
+
+      fetchSeasonPower(year);
+      fetchLeague(year);
+    };
+
+    loadYear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year]);
 
-  // When week changes, refresh weekly power
   useEffect(() => {
     if (!year || !week) return;
     fetchWeekPower(year, week);
-  }, [week, year]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, week]);
 
-  // Dashboard: when in team_history mode and team selected, fetch team history
   useEffect(() => {
     if (dashboardMode === "team_history" && selectedTeamId !== "ALL") {
       fetchTeamHistory(year, selectedTeamId);
@@ -565,7 +614,6 @@ function App() {
     }
   }, [dashboardMode, selectedTeamId, year]);
 
-  // History tab: load awards + multi-season stats once when needed
   useEffect(() => {
     if (tab === "history" && awardsByYear.length === 0 && !loadingAwards) {
       loadAwardsAcrossYears();
@@ -606,7 +654,6 @@ function App() {
   const sortedWeekTeams = useMemo(() => {
     if (!filteredWeekTeams || filteredWeekTeams.length === 0) return [];
     if (dashboardMode !== "weekly" && tab !== "overview") {
-      // default ranking when not in weekly dashboard or overview sorting
       return [...filteredWeekTeams].sort(
         (a, b) => (a.rank ?? 999) - (b.rank ?? 999)
       );
@@ -629,13 +676,12 @@ function App() {
         return compareNumbers(a.totalZ, b.totalZ);
       }
 
-      // assume category label, e.g. "FG%"
       const key = `${sortField}_z`;
       const av = a.perCategoryZ?.[key];
       const bv = b.perCategoryZ?.[key];
       return compareNumbers(av, bv);
     });
-  }, [filteredWeekTeams, sortField, sortDirection, compareNumbers, compareStrings, dashboardMode, tab]);
+  }, [filteredWeekTeams, sortField, sortDirection, dashboardMode, tab, compareNumbers, compareStrings]);
 
   const sortedSeasonTeams = useMemo(() => {
     if (!filteredSeasonTeams || filteredSeasonTeams.length === 0) return [];
@@ -668,7 +714,7 @@ function App() {
 
       return 0;
     });
-  }, [filteredSeasonTeams, sortField, sortDirection, compareNumbers, compareStrings, dashboardMode, tab]);
+  }, [filteredSeasonTeams, sortField, sortDirection, dashboardMode, tab, compareNumbers, compareStrings]);
 
   const handleRefresh = () => {
     if (year && week) {
@@ -684,7 +730,6 @@ function App() {
   };
 
   // ----- Render helpers -----
-
   const renderTabs = () => (
     <div
       style={{
@@ -803,7 +848,7 @@ function App() {
           </div>
         )}
 
-        {/* Dashboard metric mode (sub-tabs) */}
+        {/* Dashboard metric mode */}
         {tab === "dashboard" && (
           <div style={{ display: "flex", flexDirection: "column" }}>
             <label style={{ fontSize: "0.9rem" }}>View</label>
@@ -923,7 +968,7 @@ function App() {
           </div>
         )}
 
-        {/* Sort controls (only for dashboard weekly/season) */}
+        {/* Sort controls */}
         {tab === "dashboard" && dashboardMode !== "team_history" && (
           <>
             <div>
@@ -1085,8 +1130,8 @@ function App() {
                         {totalZ.toFixed(2)}
                       </td>
                       {CATEGORIES.map((cat) => {
-                        const key = `${cat}_z`;
-                        return renderZCell(perCat[key] ?? 0);
+                        const keyName = `${cat}_z`;
+                        return renderZCell(perCat[keyName] ?? 0, keyName);
                       })}
                     </tr>
                   );
@@ -1589,8 +1634,8 @@ function App() {
                               {totalZ.toFixed(2)}
                             </td>
                             {CATEGORIES.map((cat) => {
-                              const key = `${cat}_z`;
-                              return renderZCell(perCat[key] ?? 0);
+                              const keyName = `${cat}_z`;
+                              return renderZCell(perCat[keyName] ?? 0, keyName);
                             })}
                           </tr>
                         );
@@ -1769,21 +1814,21 @@ function App() {
                                     {totalZ.toFixed(2)}
                                   </td>
                                   {CATEGORIES.map((cat) => {
-                                    const key = `${cat}_z`;
-                                    return renderZCell(zs[key] ?? 0);
+                                    const keyName = `${cat}_z`;
+                                    return renderZCell(zs[keyName] ?? 0, keyName);
                                   })}
                                 </tr>
                               );
                             } else {
-                              const key = `${selectedCategory}_z`;
-                              const val = zs[key] ?? 0;
+                              const keyName = `${selectedCategory}_z`;
+                              const val = zs[keyName] ?? 0;
                               return (
                                 <tr key={weekNo}>
                                   <td style={tdStyle}>{weekNo}</td>
                                   <td style={{ ...tdStyle, fontWeight: 600 }}>
                                     {totalZ.toFixed(2)}
                                   </td>
-                                  {renderZCell(val)}
+                                  {renderZCell(val, keyName)}
                                 </tr>
                               );
                             }
@@ -2046,7 +2091,6 @@ function App() {
   };
 
   // ----- Render root -----
-
   return (
     <div
       style={{

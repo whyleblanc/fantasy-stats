@@ -1,11 +1,12 @@
 from espn_api.basketball import League
 from dotenv import load_dotenv
 from functools import lru_cache
-from typing import List, Dict
+from typing import List, Dict, Tuple, Any
 from db import SessionLocal, WeekTeamStats
 import os
 import pandas as pd
 import numpy as np
+import math
 
 load_dotenv()
 
@@ -52,9 +53,8 @@ def get_league(year: int) -> League:
         espn_s2=ESPN_S2,
     )
 
-# ---- Simple in-process caches for heavy computations ----
 
-from typing import Dict, Tuple, Any
+# ---- Simple in-process caches for heavy computations ----
 
 # key = (year, week) etc.
 _WEEK_POWER_CACHE: Dict[Tuple[int, int], Any] = {}
@@ -118,18 +118,15 @@ def get_team_history_cached(
         _TEAM_HISTORY_CACHE[key] = payload
     return _TEAM_HISTORY_CACHE[key]
 
+
 # -----------------------
-# EXISTING: player-level
+# Player-level (placeholder, still there if you want it later)
 # -----------------------
 
 
 def build_player_stats_df(year: int) -> pd.DataFrame:
     """
     Return a DataFrame of player-level stats for the given year.
-    Columns might look like:
-        ['playerId', 'playerName', 'fantasyTeamId', 'fantasyTeamName',
-         'FG%', 'FT%', '3PM', 'REB', 'AST', 'STL', 'BLK', 'PTS', ...]
-    Currently a skeleton – you can wire in per-player stats later.
     """
     league = get_league(year)
 
@@ -143,7 +140,6 @@ def build_player_stats_df(year: int) -> pd.DataFrame:
                     "espnProTeam": player.proTeam,
                     "fantasyTeamId": team.team_id,
                     "fantasyTeamName": team.team_name,
-                    # TODO: add your per-category stats here (FGM, FGA, 3PM, REB, etc.)
                 }
             )
 
@@ -192,7 +188,7 @@ def compute_team_zscores(year: int) -> pd.DataFrame:
 
 
 # -----------------------
-# NEW: team/week-level
+# Helpers
 # -----------------------
 
 
@@ -218,15 +214,6 @@ def _max_week_for_year(year: int, league: League) -> int:
 def _extract_category_stats(stats_dict: Dict) -> Dict[str, float]:
     """
     Convert ESPN's home_team_cats / away_team_cats dict into our flat category row.
-
-    Example input:
-      {
-        "FG%": {"result": "WIN", "score": 0.4740566},
-        "REB": {"result": "WIN", "score": 223.0},
-        ...
-      }
-
-    We only care about the numeric 'score' per category.
     """
     row: Dict[str, float] = {}
 
@@ -236,7 +223,6 @@ def _extract_category_stats(stats_dict: Dict) -> Dict[str, float]:
         if isinstance(entry, dict):
             value = entry.get("score", 0)
         else:
-            # Just in case it's already a raw number
             value = entry
 
         try:
@@ -251,12 +237,6 @@ def _compute_result_score_from_cats(cats: Dict) -> float:
     """
     Turn per-category results into a single scalar "actual result score"
     for the week, on [0,1].
-
-    We use category win%:
-
-        score = (wins + 0.5 * ties) / total_cats_played
-
-    If we can't infer anything, fall back to 0.5 (neutral).
     """
     if not cats:
         return 0.5
@@ -282,11 +262,23 @@ def _compute_result_score_from_cats(cats: Dict) -> float:
     return (wins + 0.5 * ties) / total
 
 
+def _clean_float(value: Any, default: float = 0.0) -> float:
+    """
+    Make sure anything we emit as JSON is a finite float.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(f) or math.isinf(f):
+        return default
+    return f
+
+
 @lru_cache(maxsize=16)
 def _build_week_results_df(year: int) -> pd.DataFrame:
     """
     One row per team/week, with a numeric "result" score based on category wins.
-
     Columns:
       - year
       - week
@@ -335,7 +327,10 @@ def _build_week_results_df(year: int) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["year", "week", "team_id", "result"])
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.fillna(0.0)
+    return df
 
 
 def build_team_week_stats(year: int) -> pd.DataFrame:
@@ -384,6 +379,8 @@ def build_team_week_stats(year: int) -> pd.DataFrame:
         return pd.DataFrame(columns=["year", "week", "team_id", "team_name"] + CATEGORIES)
 
     df = pd.DataFrame(rows)
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.fillna(0.0)
     return df
 
 
@@ -410,9 +407,6 @@ def compute_weekly_zscores(year: int) -> pd.DataFrame:
       - get team/week stats
       - add a 'League Average' row per week
       - compute z-scores per category, per week
-
-    Returns a DataFrame with:
-      ['year', 'week', 'team_id', 'team_name'] + CATEGORIES + [f"{cat}_z" ...]
     """
     base_df = build_team_week_stats(year)
     if base_df.empty:
@@ -443,10 +437,17 @@ def compute_weekly_zscores(year: int) -> pd.DataFrame:
         all_groups.append(group)
 
     z_df = pd.concat(all_groups, ignore_index=True)
+
+    # 🔒 make sure nothing NaN/Inf leaks to the API
+    z_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    z_df = z_df.fillna(0.0)
+
     return z_df
 
 
-def _ensure_league_average_row(week_df: pd.DataFrame, year: int, week: int) -> pd.DataFrame:
+def _ensure_league_average_row(
+    week_df: pd.DataFrame, year: int, week: int
+) -> pd.DataFrame:
     """
     Ensure there's a team_id=0, team_name='League Average' row
     for this year/week. If it's already there, return unchanged.
@@ -476,7 +477,10 @@ def _ensure_league_average_row(week_df: pd.DataFrame, year: int, week: int) -> p
     avg_row.update(avg_stats)
     avg_row.update(avg_z)
 
-    return pd.concat([week_df, pd.DataFrame([avg_row])], ignore_index=True)
+    df = pd.concat([week_df, pd.DataFrame([avg_row])], ignore_index=True)
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.fillna(0.0)
+    return df
 
 
 def _week_df_to_teams_payload(week_df: pd.DataFrame) -> List[Dict]:
@@ -487,8 +491,11 @@ def _week_df_to_teams_payload(week_df: pd.DataFrame) -> List[Dict]:
     teams_payload: List[Dict] = []
 
     for _, row in week_df.iterrows():
-        stats = {cat: float(row.get(cat, 0.0)) for cat in CATEGORIES}
-        zstats = {f"{cat}_z": float(row.get(f"{cat}_z", 0.0)) for cat in CATEGORIES}
+        stats = {cat: _clean_float(row.get(cat, 0.0)) for cat in CATEGORIES}
+        zstats = {
+            f"{cat}_z": _clean_float(row.get(f"{cat}_z", 0.0))
+            for cat in CATEGORIES
+        }
         teams_payload.append(
             {
                 "teamId": int(row["team_id"]),
@@ -526,16 +533,7 @@ def compute_week_zscores_for_api(year: int, week: int) -> Dict:
 
 def compute_season_zscores_for_api(year: int) -> Dict:
     """
-    Return all weeks for a given year:
-
-    {
-      "year": 2025,
-      "weeks": [
-        { "week": 1, "teams": [...] },
-        { "week": 2, "teams": [...] },
-        ...
-      ]
-    }
+    Return all weeks for a given year.
     """
     z_df = compute_weekly_zscores(year)
     if z_df.empty:
@@ -573,9 +571,6 @@ def compute_weekly_power_df(year: int) -> pd.DataFrame:
     """
     For a given year, return a DF with:
       year, week, team_id, team_name, all cat z-scores, total_z, and result.
-
-    total_z = sum of z-scores across your 9 categories.
-    result  = actual weekly category win% vs opponent (0–1), from ESPN cats.
     """
     z_df = compute_weekly_zscores(year)
     if z_df.empty:
@@ -601,9 +596,13 @@ def compute_weekly_power_df(year: int) -> pd.DataFrame:
     z_cols = [f"{cat}_z" for cat in CATEGORIES if f"{cat}_z" in z_df.columns]
     if not z_cols:
         z_df["total_z"] = 0.0
-        return z_df
+    else:
+        z_df["total_z"] = z_df[z_cols].sum(axis=1)
 
-    z_df["total_z"] = z_df[z_cols].sum(axis=1)
+    # 🔒 sanitize everything for downstream computations
+    z_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    z_df = z_df.fillna(0.0)
+
     return z_df
 
 
@@ -633,15 +632,15 @@ def _week_power_from_db(year: int, week: int) -> Dict | None:
         teams_payload: List[Dict] = []
         for idx, r in enumerate(rows_sorted, start=1):
             per_cat_z = {
-                "FG%_z": r.fg_z or 0.0,
-                "FT%_z": r.ft_z or 0.0,
-                "3PM_z": r.three_pm_z or 0.0,
-                "REB_z": r.reb_z or 0.0,
-                "AST_z": r.ast_z or 0.0,
-                "STL_z": r.stl_z or 0.0,
-                "BLK_z": r.blk_z or 0.0,
-                "DD_z": r.dd_z or 0.0,
-                "PTS_z": r.pts_z or 0.0,
+                "FG%_z": _clean_float(r.fg_z),
+                "FT%_z": _clean_float(r.ft_z),
+                "3PM_z": _clean_float(r.three_pm_z),
+                "REB_z": _clean_float(r.reb_z),
+                "AST_z": _clean_float(r.ast_z),
+                "STL_z": _clean_float(r.stl_z),
+                "BLK_z": _clean_float(r.blk_z),
+                "DD_z": _clean_float(r.dd_z),
+                "PTS_z": _clean_float(r.pts_z),
             }
             teams_payload.append(
                 {
@@ -649,7 +648,7 @@ def _week_power_from_db(year: int, week: int) -> Dict | None:
                     "teamName": r.team_name,
                     "isLeagueAverage": bool(r.is_league_average),
                     "rank": idx,
-                    "totalZ": r.total_z or 0.0,
+                    "totalZ": _clean_float(r.total_z),
                     "perCategoryZ": per_cat_z,
                 }
             )
@@ -667,7 +666,7 @@ def _save_week_power_to_db(year: int, week: int, week_df: pd.DataFrame) -> None:
             team_id = int(row["team_id"])
             team_name = str(row["team_name"])
             is_league_avg = team_id == 0
-            total_z = float(row.get("total_z", 0.0))
+            total_z = _clean_float(row.get("total_z", 0.0))
 
             existing: WeekTeamStats | None = (
                 session.query(WeekTeamStats)
@@ -697,7 +696,7 @@ def _save_week_power_to_db(year: int, week: int, week_df: pd.DataFrame) -> None:
             for cat, col_name in CAT_TO_DB_COL.items():
                 z_col = f"{cat}_z"
                 if z_col in row:
-                    setattr(existing, col_name, float(row[z_col]))
+                    setattr(existing, col_name, _clean_float(row[z_col]))
 
         session.commit()
     finally:
@@ -708,14 +707,7 @@ def _compute_all_play_and_luck_for_week(week_df: pd.DataFrame) -> pd.DataFrame:
     """
     Given a week-level DF with at least:
         ['team_id', 'team_name', 'total_z', 'result']
-    and optionally a league-average row with team_id == 0,
-    compute:
-        - all_play_wins / losses / ties
-        - all_play_win_pct (expected win probability vs field)
-        - actual_result_score (0–1 category win%)
-        - luck_index = actual_result_score - all_play_win_pct
-
-    Returns a *new* DataFrame with these columns added.
+    compute all-play + luck fields and return a new DF.
     """
     if week_df.empty:
         return week_df
@@ -768,7 +760,7 @@ def _compute_all_play_and_luck_for_week(week_df: pd.DataFrame) -> pd.DataFrame:
 
     real["luck_index"] = real["actual_result_score"] - real["all_play_win_pct"]
 
-    # Merge those back onto the original week_df (league avg row gets NaN → filled)
+    # Merge back onto the original week_df (league avg row gets NaN → filled)
     merged = week_df.merge(
         real[
             [
@@ -792,6 +784,9 @@ def _compute_all_play_and_luck_for_week(week_df: pd.DataFrame) -> pd.DataFrame:
     for col in ["all_play_win_pct", "actual_result_score", "luck_index"]:
         merged[col] = merged[col].fillna(0.0).astype(float)
 
+    merged.replace([np.inf, -np.inf], np.nan, inplace=True)
+    merged = merged.fillna(0.0)
+
     return merged
 
 
@@ -802,40 +797,15 @@ def compute_week_power_for_api(
     force_refresh: bool = False,
 ) -> Dict:
     """
-    Return power ranking for a single week, with all-play + luck:
-
-    {
-      "year": 2025,
-      "week": 1,
-      "teams": [
-        {
-          "teamId": ...,
-          "teamName": "...",
-          "isLeagueAverage": false,
-          "rank": 1,
-          "totalZ": ...,
-          "perCategoryZ": { "FG%_z": ..., ... },
-          "allPlay": {
-            "wins": ...,
-            "losses": ...,
-            "ties": ...,
-            "winPct": ...
-          },
-          "luckIndex": ...
-        },
-        ...
-      ]
-    }
+    Return power ranking for a single week, with all-play + luck.
     """
-
     # Optional full refresh (stat corrections etc.)
     if force_refresh:
         compute_weekly_power_df.cache_clear()
         compute_weekly_zscores.cache_clear()
         _build_week_results_df.cache_clear()
 
-    # If you really want to use DB cache for the *basic* numbers only,
-    # you can keep this branch. Note it won't include all-play/luck.
+    # DB cache for base numbers (no luck/all-play)
     if use_cache and not force_refresh:
         cached = _week_power_from_db(year, week)
         if cached is not None:
@@ -864,7 +834,7 @@ def compute_week_power_for_api(
 
         rank_map = {int(r["team_id"]): idx + 1 for idx, r in real.iterrows()}
         week_df[f"{cat}_rank"] = week_df["team_id"].map(rank_map)
-        
+
     # Sort best → worst by total_z
     week_df = week_df.sort_values("total_z", ascending=False).reset_index(drop=True)
 
@@ -874,13 +844,7 @@ def compute_week_power_for_api(
     teams_payload: List[Dict] = []
     for idx, row in week_df.iterrows():
         per_cat_z = {
-            f"{cat}_z": float(row.get(f"{cat}_z", 0.0)) for cat in CATEGORIES
-        }
-
-    teams_payload: List[Dict] = []
-    for idx, row in week_df.iterrows():
-        per_cat_z = {
-            f"{cat}_z": float(row.get(f"{cat}_z", 0.0)) for cat in CATEGORIES
+            f"{cat}_z": _clean_float(row.get(f"{cat}_z", 0.0)) for cat in CATEGORIES
         }
 
         per_cat_rank: Dict[str, int | None] = {}
@@ -897,16 +861,16 @@ def compute_week_power_for_api(
                 "teamName": str(row["team_name"]),
                 "isLeagueAverage": int(row["team_id"]) == 0,
                 "rank": int(idx + 1),
-                "totalZ": float(row["total_z"]),
+                "totalZ": _clean_float(row.get("total_z", 0.0)),
                 "perCategoryZ": per_cat_z,
                 "perCategoryRank": per_cat_rank,
                 "allPlay": {
                     "wins": int(row.get("all_play_wins", 0)),
                     "losses": int(row.get("all_play_losses", 0)),
                     "ties": int(row.get("all_play_ties", 0)),
-                    "winPct": float(row.get("all_play_win_pct", 0.0)),
+                    "winPct": _clean_float(row.get("all_play_win_pct", 0.0)),
                 },
-                "luckIndex": float(row.get("luck_index", 0.0)),
+                "luckIndex": _clean_float(row.get("luck_index", 0.0)),
             }
         )
 
@@ -920,33 +884,6 @@ def compute_week_power_for_api(
 def compute_season_power_for_api(year: int) -> Dict:
     """
     Season-long power rankings with fraud/luck metrics.
-
-    Output:
-
-    {
-      "year": 2025,
-      "teams": [
-        {
-          "teamId": ...,
-          "teamName": "...",
-          "rank": 1,
-          "weeks": 20,
-          "avgTotalZ": ...,
-          "sumTotalZ": ...,
-          "actualWins": ...,
-          "expectedWins": ...,
-          "luck": ...,
-          "avgLuck": ...,
-          "fraudScore": ...
-        },
-        ...
-      ]
-    }
-
-    - actualWins: sum of weekly category win% (0–1)
-    - expectedWins: sum of all-play expected win% (0–1)
-    - luck: actualWins - expectedWins
-    - fraudScore: luck / weeks
     """
     df = compute_weekly_power_df(year)
     if df.empty:
@@ -987,7 +924,7 @@ def compute_season_power_for_api(year: int) -> Dict:
 
     teams_payload: List[Dict] = []
     for _, row in grouped.iterrows():
-        avg = float(row["avgTotalZ"])
+        avg = _clean_float(row["avgTotalZ"])
         teams_payload.append(
             {
                 "teamId": int(row["team_id"]),
@@ -995,13 +932,13 @@ def compute_season_power_for_api(year: int) -> Dict:
                 "rank": int(row["rank"]),
                 "weeks": int(row["weeks"]),
                 "avgTotalZ": avg,
-                "avgZ": avg,  # <--- alias for frontend
-                "sumTotalZ": float(row["sumTotalZ"]),
-                "actualWins": float(row["actualWins"]),
-                "expectedWins": float(row["expectedWins"]),
-                "luck": float(row["luck"]),
-                "avgLuck": float(row["avgLuck"]),
-                "fraudScore": float(row["fraudScore"]),
+                "avgZ": avg,  # alias for frontend
+                "sumTotalZ": _clean_float(row["sumTotalZ"]),
+                "actualWins": _clean_float(row["actualWins"]),
+                "expectedWins": _clean_float(row["expectedWins"]),
+                "luck": _clean_float(row["luck"]),
+                "avgLuck": _clean_float(row["avgLuck"]),
+                "fraudScore": _clean_float(row["fraudScore"]),
             }
         )
 
@@ -1010,10 +947,10 @@ def compute_season_power_for_api(year: int) -> Dict:
         "teams": teams_payload,
     }
 
+
 def compute_team_history_for_api(year: int, team_id: int) -> Dict:
     """
     Return all weeks for a specific team in a given year, including:
-
     - per-week stats & zscores
     - league average stats & zscores
     - totalZ (sum of z-scores across cats for that week)
@@ -1031,19 +968,20 @@ def compute_team_history_for_api(year: int, team_id: int) -> Dict:
 
     # ---- Compute total_z per row ----
     z_cols = [f"{cat}_z" for cat in CATEGORIES if f"{cat}_z" in z_df.columns]
+    z_df = z_df.copy()
     if z_cols:
-        z_df = z_df.copy()
         z_df["total_z"] = z_df[z_cols].sum(axis=1)
     else:
-        z_df = z_df.copy()
         z_df["total_z"] = 0.0
+
+    z_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    z_df = z_df.fillna(0.0)
 
     # ---- Compute weekly rank by total_z (ignore league average row) ----
     no_avg = z_df[z_df["team_id"] != 0].copy()
     ranked_groups = []
     for (yr, wk), grp in no_avg.groupby(["year", "week"]):
         grp = grp.copy()
-        # higher total_z = better rank (1 is best)
         grp["weekly_rank_total"] = grp["total_z"].rank(
             method="min", ascending=False
         ).astype(int)
@@ -1080,15 +1018,17 @@ def compute_team_history_for_api(year: int, team_id: int) -> Dict:
     for wk in sorted(team_df["week"].unique()):
         row = team_df[team_df["week"] == wk].iloc[0]
 
-        # Team stats/z
-        stats = {cat: float(row.get(cat, 0.0)) for cat in CATEGORIES}
-        zstats = {f"{cat}_z": float(row.get(f"{cat}_z", 0.0)) for cat in CATEGORIES}
-        total_z = float(row.get("total_z", 0.0))
+        stats = {cat: _clean_float(row.get(cat, 0.0)) for cat in CATEGORIES}
+        zstats = {
+            f"{cat}_z": _clean_float(row.get(f"{cat}_z", 0.0))
+            for cat in CATEGORIES
+        }
+        total_z = _clean_float(row.get("total_z", 0.0))
         running_total_z += total_z
 
         rank_val = int(row.get("weekly_rank_total", 0))
 
-        # League average row for same week (team_id == 0) comes from original z_df
+        # League average row for same week (team_id == 0)
         league_row = z_df[
             (z_df["year"] == year)
             & (z_df["week"] == wk)
@@ -1097,13 +1037,12 @@ def compute_team_history_for_api(year: int, team_id: int) -> Dict:
 
         if not league_row.empty:
             lr = league_row.iloc[0]
-            league_stats = {cat: float(lr.get(cat, 0.0)) for cat in CATEGORIES}
+            league_stats = {cat: _clean_float(lr.get(cat, 0.0)) for cat in CATEGORIES}
             league_zstats = {
-                f"{cat}_z": float(lr.get(f"{cat}_z", 0.0)) for cat in CATEGORIES
+                f"{cat}_z": _clean_float(lr.get(f"{cat}_z", 0.0))
+                for cat in CATEGORIES
             }
-            league_total_z = float(
-                sum(league_zstats.values())
-            )  # optional, for context
+            league_total_z = _clean_float(sum(league_zstats.values()))
         else:
             league_stats = {cat: 0.0 for cat in CATEGORIES}
             league_zstats = {f"{cat}_z": 0.0 for cat in CATEGORIES}
@@ -1112,11 +1051,11 @@ def compute_team_history_for_api(year: int, team_id: int) -> Dict:
         history.append(
             {
                 "week": int(wk),
-                "stats": stats,
+                "stats": league_stats if False else stats,  # keep same API shape
                 "zscores": zstats,
                 "totalZ": total_z,
                 "cumulativeTotalZ": running_total_z,
-                "rank": rank_val,  # 🔹 new field used by the chart
+                "rank": rank_val,
                 "leagueAverageStats": league_stats,
                 "leagueAverageZscores": league_zstats,
                 "leagueAverageTotalZ": league_total_z,

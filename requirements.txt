@@ -1,0 +1,8 @@
+# requirements.txt
+espn_api
+python-dotenv
+flask
+flask-cors
+pandas
+numpy
+sqlalchemy>=2.0

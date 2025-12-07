@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Flask artifacts
+instance/
+.env
+
+# Node / React
+node_modules/
+build/
+dist/
+
+# VSCode / OS
+.vscode/
+.DS_Store

@@ -712,9 +712,21 @@ function App() {
         return compareNumbers(a.sumTotalZ, b.sumTotalZ);
       }
 
-      return 0;
+      // Category sort (e.g. "FG%", "3PM", etc.) using season average z
+      const key = `${sortField}_z`;
+      const av = a.perCategoryZSeason?.[key];
+      const bv = b.perCategoryZSeason?.[key];
+      return compareNumbers(av, bv);
     });
-  }, [filteredSeasonTeams, sortField, sortDirection, dashboardMode, tab, compareNumbers, compareStrings]);
+  }, [
+    filteredSeasonTeams,
+    sortField,
+    sortDirection,
+    dashboardMode,
+    tab,
+    compareNumbers,
+    compareStrings,
+  ]);
 
   const handleRefresh = () => {
     if (year && week) {
@@ -780,6 +792,7 @@ function App() {
       { value: "RANK", label: "Rank" },
       { value: "AVG_TOTAL_Z", label: "Avg Total Z" },
       { value: "SUM_TOTAL_Z", label: "Sum Total Z" },
+      ...CATEGORIES.map((c) => ({ value: c, label: `${c} Season Z` })),
       { value: "TEAM_NAME", label: "Team Name" },
     ];
 
@@ -987,23 +1000,7 @@ function App() {
                   minWidth: "150px",
                 }}
               >
-                {(dashboardMode === "season"
-                  ? [
-                      { value: "RANK", label: "Rank" },
-                      { value: "AVG_TOTAL_Z", label: "Avg Total Z" },
-                      { value: "SUM_TOTAL_Z", label: "Sum Total Z" },
-                      { value: "TEAM_NAME", label: "Team Name" },
-                    ]
-                  : [
-                      { value: "RANK", label: "Rank" },
-                      { value: "TOTAL_Z", label: "Total Z" },
-                      ...CATEGORIES.map((c) => ({
-                        value: c,
-                        label: `${c} Z`,
-                      })),
-                      { value: "TEAM_NAME", label: "Team Name" },
-                    ]
-                ).map((opt) => (
+                {sortOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
@@ -1191,6 +1188,11 @@ function App() {
                     <th style={{ ...thStyle, cursor: "default" }}>
                       Sum Total Z
                     </th>
+                    {CATEGORIES.map((cat) => (
+                      <th key={cat} style={{ ...thStyle, cursor: "default" }}>
+                        {cat}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -1199,6 +1201,7 @@ function App() {
                       typeof t.avgTotalZ === "number" ? t.avgTotalZ : 0;
                     const sumZ =
                       typeof t.sumTotalZ === "number" ? t.sumTotalZ : 0;
+                    const perSeason = t.perCategoryZSeason || {};
 
                     return (
                       <tr key={t.teamId}>
@@ -1211,6 +1214,10 @@ function App() {
                           {avgZ.toFixed(2)}
                         </td>
                         <td style={tdStyle}>{sumZ.toFixed(2)}</td>
+                        {CATEGORIES.map((cat) => {
+                          const keyName = `${cat}_z`;
+                          return renderZCell(perSeason[keyName] ?? 0, keyName);
+                        })}
                       </tr>
                     );
                   })}
@@ -1698,6 +1705,16 @@ function App() {
                           sortDirection={sortDirection}
                           onSort={handleSort}
                         />
+                        {CATEGORIES.map((cat) => (
+                          <SortHeader
+                            key={cat}
+                            label={cat}
+                            field={cat}
+                            sortField={sortField}
+                            sortDirection={sortDirection}
+                            onSort={handleSort}
+                          />
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -1706,6 +1723,7 @@ function App() {
                           typeof t.avgTotalZ === "number" ? t.avgTotalZ : 0;
                         const sumZ =
                           typeof t.sumTotalZ === "number" ? t.sumTotalZ : 0;
+                        const perSeason = t.perCategoryZSeason || {};
 
                         return (
                           <tr key={t.teamId}>
@@ -1718,6 +1736,10 @@ function App() {
                               {avgZ.toFixed(2)}
                             </td>
                             <td style={tdStyle}>{sumZ.toFixed(2)}</td>
+                            {CATEGORIES.map((cat) => {
+                              const keyName = `${cat}_z`;
+                              return renderZCell(perSeason[keyName] ?? 0, keyName);
+                            })}
                           </tr>
                         );
                       })}

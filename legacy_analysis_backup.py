@@ -605,6 +605,91 @@ def compute_weekly_power_df(year: int) -> pd.DataFrame:
 
     return z_df
 
+def _build_season_summary_df(year: int) -> pd.DataFrame:
+    """
+    Build a season-level summary DF per team (excluding league average),
+    based on weekly power DF enriched with all-play and luck.
+
+    Columns (per team_id, team_name):
+      - weeks          (number of weeks with data)
+      - sumTotalZ
+      - avgTotalZ
+      - actualWins     (sum of weekly result scores)
+      - expectedWins   (sum of all-play win pct)
+      - avgLuck        (mean weekly luck_index)
+      - luck           (actualWins - expectedWins)
+      - fraudScore     (luck / weeks)
+      - <cat>_z        (season-average z-score per category)
+      - <cat>_seasonRank (rank by season-average z; 1 = best)
+    """
+    weekly_df = compute_weekly_power_df(year)
+    if weekly_df.empty:
+        return pd.DataFrame()
+
+    # Enrich each week with all-play and luck
+    enriched_weeks: List[pd.DataFrame] = []
+    for _, group in weekly_df.groupby("week"):
+        group = _compute_all_play_and_luck_for_week(group)
+        enriched_weeks.append(group)
+
+    full = pd.concat(enriched_weeks, ignore_index=True)
+
+    # Drop league-average pseudo-team for rankings
+    full = full[full["team_id"] != 0].copy()
+    if full.empty:
+        return pd.DataFrame()
+
+    # Core season aggregates
+    grouped = (
+        full.groupby(["team_id", "team_name"], as_index=False)
+        .agg(
+            weeks=("week", "nunique"),
+            sumTotalZ=("total_z", "sum"),
+            avgTotalZ=("total_z", "mean"),
+            actualWins=("actual_result_score", "sum"),
+            expectedWins=("all_play_win_pct", "sum"),
+            avgLuck=("luck_index", "mean"),
+        )
+    )
+
+    # Luck + fraud
+    grouped["luck"] = grouped["actualWins"] - grouped["expectedWins"]
+    grouped["fraudScore"] = grouped["luck"] / grouped["weeks"].replace(0, np.nan)
+    grouped["fraudScore"] = grouped["fraudScore"].fillna(0.0)
+
+    # Per-category season-average z
+    cat_z_cols = {
+        f"{cat}_z": "mean"
+        for cat in CATEGORIES
+        if f"{cat}_z" in full.columns
+    }
+
+    if cat_z_cols:
+        cat_means = (
+            full.groupby(["team_id", "team_name"], as_index=False)
+            .agg(cat_z_cols)
+        )
+        grouped = grouped.merge(cat_means, on=["team_id", "team_name"], how="left")
+
+        # Per-category season ranks (higher z = better rank)
+        for cat in CATEGORIES:
+            zcol = f"{cat}_z"
+            if zcol in grouped.columns:
+                grouped[f"{cat}_seasonRank"] = (
+                    grouped[zcol]
+                    .rank(method="min", ascending=False)
+                    .astype(int)
+                )
+
+    # Rank by avgTotalZ (underlying strength)
+    grouped = grouped.sort_values("avgTotalZ", ascending=False).reset_index(drop=True)
+    grouped["rank"] = grouped.index + 1
+
+    # Sanitize
+    grouped.replace([np.inf, -np.inf], np.nan, inplace=True)
+    grouped = grouped.fillna(0.0)
+
+    return grouped
 
 def _week_power_from_db(year: int, week: int) -> Dict | None:
     """Return cached week power payload from DB, or None if missing."""
@@ -883,48 +968,40 @@ def compute_week_power_for_api(
 
 def compute_season_power_for_api(year: int) -> Dict:
     """
-    Season-long power rankings with fraud/luck metrics.
+    Season-long power rankings with fraud/luck + per-category season stats.
+
+    For each team, returns:
+      - rank, weeks, avgTotalZ, sumTotalZ
+      - actualWins, expectedWins, luck, avgLuck, fraudScore
+      - perCategoryZSeason:  { "<CAT>_z": float }   (season-average z)
+      - perCategoryRankSeason: { "<CAT>_seasonRank": int | None }
     """
-    df = compute_weekly_power_df(year)
-    if df.empty:
+    grouped = _build_season_summary_df(year)
+    if grouped.empty:
         return {"year": year, "teams": []}
-
-    # Enrich each week with all-play/luck
-    enriched_weeks: List[pd.DataFrame] = []
-    for wk, group in df.groupby("week"):
-        group = _compute_all_play_and_luck_for_week(group)
-        enriched_weeks.append(group)
-
-    full = pd.concat(enriched_weeks, ignore_index=True)
-
-    # Ignore league-average pseudo-team for rankings
-    full = full[full["team_id"] != 0].copy()
-    if full.empty:
-        return {"year": year, "teams": []}
-
-    grouped = (
-        full.groupby(["team_id", "team_name"], as_index=False)
-        .agg(
-            weeks=("week", "nunique"),
-            sumTotalZ=("total_z", "sum"),
-            avgTotalZ=("total_z", "mean"),
-            actualWins=("actual_result_score", "sum"),
-            expectedWins=("all_play_win_pct", "sum"),
-            avgLuck=("luck_index", "mean"),
-        )
-    )
-
-    grouped["luck"] = grouped["actualWins"] - grouped["expectedWins"]
-    grouped["fraudScore"] = grouped["luck"] / grouped["weeks"].replace(0, np.nan)
-    grouped["fraudScore"] = grouped["fraudScore"].fillna(0.0)
-
-    # Rank by avgTotalZ (underlying strength)
-    grouped = grouped.sort_values("avgTotalZ", ascending=False).reset_index(drop=True)
-    grouped["rank"] = grouped.index + 1
 
     teams_payload: List[Dict] = []
     for _, row in grouped.iterrows():
         avg = _clean_float(row["avgTotalZ"])
+
+        # Season per-category z (same key style as weekly perCategoryZ)
+        per_cat_z_season: Dict[str, float] = {}
+        per_cat_rank_season: Dict[str, int | None] = {}
+
+        for cat in CATEGORIES:
+            zcol = f"{cat}_z"
+            rcol = f"{cat}_seasonRank"
+
+            if zcol in grouped.columns:
+                per_cat_z_season[zcol] = _clean_float(row.get(zcol, 0.0))
+            else:
+                per_cat_z_season[zcol] = 0.0
+
+            if rcol in grouped.columns and pd.notna(row.get(rcol)):
+                per_cat_rank_season[rcol] = int(row.get(rcol))
+            else:
+                per_cat_rank_season[rcol] = None
+
         teams_payload.append(
             {
                 "teamId": int(row["team_id"]),
@@ -939,6 +1016,9 @@ def compute_season_power_for_api(year: int) -> Dict:
                 "luck": _clean_float(row["luck"]),
                 "avgLuck": _clean_float(row["avgLuck"]),
                 "fraudScore": _clean_float(row["fraudScore"]),
+                # NEW: season category stats for heatmaps + sorting
+                "perCategoryZSeason": per_cat_z_season,
+                "perCategoryRankSeason": per_cat_rank_season,
             }
         )
 

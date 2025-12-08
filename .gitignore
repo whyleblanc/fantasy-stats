@@ -1,8 +1,15 @@
-# Python
+# Python env + cache
 .venv/
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.python-version
+
+# Secrets
+.env
+.env.*
 
 # Node / React
 node_modules/
@@ -10,15 +17,18 @@ dist/
 frontend/node_modules/
 frontend/dist/
 
-# Environment / secrets
-.env
-*.env
-
 # OS / editor junk
 .DS_Store
 .idea/
 .vscode/
 
-fantasy_stats.db
-db.py
+# Database files (catch ALL .db files anywhere)
 *.db
+**/*.db
+
+# Explicit DB file
+fantasy_stats.db
+
+# Python DB script (catch anywhere)
+db.py
+**/db.py

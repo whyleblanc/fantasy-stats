@@ -5,7 +5,13 @@ import "./App.css";
 import OverviewTab from "./components/OverviewTab";
 import DashboardTab from "./components/DashboardTab";
 import HistoryTab from "./components/HistoryTab";
-import { api } from "./api/client";
+
+import {
+  getMeta,
+  getLeague,
+  getWeekPower,
+  getSeasonPower,
+} from "./api/client";
 
 // Central categories list
 const CATEGORIES = ["FG%", "FT%", "3PM", "REB", "AST", "STL", "BLK", "DD", "PTS"];
@@ -30,21 +36,16 @@ function App() {
   // ---- data ----
   const [weekPower, setWeekPower] = useState(null);
   const [seasonPower, setSeasonPower] = useState(null);
-  const [leagueInfo, setLeagueInfo] = useState(null);
-
-  // team history
-  const [selectedTeamId, setSelectedTeamId] = useState(null);
-  const [teamHistory, setTeamHistory] = useState(null);
+  const [standingsLeague, setStandingsLeague] = useState(null);
 
   // ---- loading / error ----
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [loadingWeek, setLoadingWeek] = useState(false);
   const [loadingSeason, setLoadingSeason] = useState(false);
   const [loadingLeague, setLoadingLeague] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState(null);
 
-  // Latest season for ESPN standings (always current)
+  // Latest season for ESPN standings
   const standingsYear = useMemo(() => {
     if (meta.years && meta.years.length > 0) {
       return Math.max(...meta.years);
@@ -52,36 +53,30 @@ function App() {
     return year;
   }, [meta.years, year]);
 
-  // Teams available for the selected year, for history dropdown
-  const teamsForYear = useMemo(() => {
-    const teams = seasonPower?.teams || weekPower?.teams || [];
-    return teams.filter((t) => t.teamId && t.teamId !== 0);
-  }, [seasonPower, weekPower]);
-
-  // ---- API helpers (using api/client.js) ----
+  // ---- API helpers ----
 
   const fetchMeta = async (y) => {
     setLoadingMeta(true);
     setError(null);
     try {
-      const data = await api.getMeta(y);
+      const data = await getMeta(y);
       setMeta(data);
       return data;
     } catch (e) {
       console.error(e);
-      setError(e.message || "Meta error");
+      setError(e.message);
       return null;
     } finally {
       setLoadingMeta(false);
     }
   };
 
-  const fetchWeekPower = async (y, w) => {
+  const fetchWeekPowerData = async (y, w) => {
     if (!y || !w) return;
     setLoadingWeek(true);
     setError(null);
     try {
-      const data = await api.getWeekPower(y, w);
+      const data = await getWeekPower(y, w);
       setWeekPower(data);
     } catch (e) {
       console.error(e);
@@ -92,12 +87,12 @@ function App() {
     }
   };
 
-  const fetchSeasonPower = async (y) => {
+  const fetchSeasonPowerData = async (y) => {
     if (!y) return;
     setLoadingSeason(true);
     setError(null);
     try {
-      const data = await api.getSeasonPower(y);
+      const data = await getSeasonPower(y);
       setSeasonPower(data);
     } catch (e) {
       console.error(e);
@@ -108,50 +103,31 @@ function App() {
     }
   };
 
-  const fetchLeague = async (y) => {
+  const fetchLeagueStandings = async (y) => {
     if (!y) return;
     setLoadingLeague(true);
     setError(null);
     try {
-      const data = await api.getLeague(y);
-      setLeagueInfo(data);
+      const data = await getLeague(y);
+      setStandingsLeague(data);
     } catch (e) {
       console.error(e);
       setError(e.message || "League error");
-      setLeagueInfo(null);
+      setStandingsLeague(null);
     } finally {
       setLoadingLeague(false);
     }
   };
 
-  const fetchTeamHistory = async (y, teamId) => {
-    if (!y || !teamId) return;
-    setLoadingHistory(true);
-    setError(null);
-    try {
-      const data = await api.getTeamHistory(y, teamId);
-      setTeamHistory(data);
-    } catch (e) {
-      console.error(e);
-      setError(e.message || "Team history error");
-      setTeamHistory(null);
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
-
   const handleRefresh = () => {
-    if (year && week) fetchWeekPower(year, week);
-    if (year) fetchSeasonPower(year);
-    if (standingsYear) fetchLeague(standingsYear);
-    if (tab === "history" && year && selectedTeamId) {
-      fetchTeamHistory(year, selectedTeamId);
-    }
+    if (year && week) fetchWeekPowerData(year, week);
+    if (year) fetchSeasonPowerData(year);
+    if (standingsYear) fetchLeagueStandings(standingsYear);
   };
 
   // ---- effects ----
 
-  // First load: meta for default season, then week + season power
+  // First load: meta for default season
   useEffect(() => {
     const bootstrap = async () => {
       const data = await fetchMeta();
@@ -163,15 +139,15 @@ function App() {
       const weeks = data.weeks || [];
       if (!weeks.length) return;
 
-      let defaultWeek =
+      const defaultWeek =
         data.currentWeek && weeks.includes(data.currentWeek)
           ? data.currentWeek
           : weeks[weeks.length - 1];
 
       setWeek(defaultWeek);
 
-      fetchWeekPower(y, defaultWeek);
-      fetchSeasonPower(y);
+      fetchWeekPowerData(y, defaultWeek);
+      fetchSeasonPowerData(y);
     };
 
     bootstrap();
@@ -197,17 +173,8 @@ function App() {
         setWeek(w);
       }
 
-      fetchWeekPower(year, w);
-      fetchSeasonPower(year);
-
-      // if selected team doesn’t exist this year, clear history selection
-      if (
-        selectedTeamId &&
-        !teamsForYear.some((t) => t.teamId === selectedTeamId)
-      ) {
-        setSelectedTeamId(null);
-        setTeamHistory(null);
-      }
+      fetchWeekPowerData(year, w);
+      fetchSeasonPowerData(year);
     };
     loadYear();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -216,17 +183,9 @@ function App() {
   // ESPN standings: always latest season (standingsYear)
   useEffect(() => {
     if (!standingsYear) return;
-    fetchLeague(standingsYear);
+    fetchLeagueStandings(standingsYear);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standingsYear]);
-
-  // If we are on history tab and selection changes, fetch history
-  useEffect(() => {
-    if (tab !== "history") return;
-    if (!year || !selectedTeamId) return;
-    fetchTeamHistory(year, selectedTeamId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, year, selectedTeamId]);
 
   // ---- UI helpers ----
 
@@ -242,7 +201,7 @@ function App() {
       {[
         { id: "overview", label: "Overview" },
         { id: "dashboard", label: "Dashboard" },
-        { id: "history", label: "History" },
+        { id: "history", label: "Team History" },
       ].map((t) => {
         const active = tab === t.id;
         return (
@@ -390,7 +349,7 @@ function App() {
           standingsYear={standingsYear}
           weekPower={weekPower}
           seasonPower={seasonPower}
-          leagueInfo={leagueInfo}
+          leagueInfo={standingsLeague}
           loadingWeek={loadingWeek}
           loadingSeason={loadingSeason}
           loadingLeague={loadingLeague}
@@ -411,16 +370,7 @@ function App() {
       )}
 
       {!loadingMeta && tab === "history" && (
-        <HistoryTab
-          year={year}
-          meta={meta}
-          teams={teamsForYear}
-          selectedTeamId={selectedTeamId}
-          setSelectedTeamId={setSelectedTeamId}
-          teamHistory={teamHistory}
-          loadingHistory={loadingHistory}
-          categories={CATEGORIES}
-        />
+        <HistoryTab year={year} categories={CATEGORIES} />
       )}
     </div>
   );

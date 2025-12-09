@@ -102,7 +102,7 @@ function DashboardTab({
 
   return (
     <>
-      {/* Dashboard-specific controls (no extra Year/Week here) */}
+      {/* Local controls JUST for view/sort – no extra Year/Week here */}
       <section
         style={{
           marginBottom: "16px",

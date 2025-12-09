@@ -11,6 +11,7 @@ import {
   getLeague,
   getWeekPower,
   getSeasonPower,
+  getTeamHistory,
 } from "./api/client";
 
 // Central categories list
@@ -37,6 +38,11 @@ function App() {
   const [weekPower, setWeekPower] = useState(null);
   const [seasonPower, setSeasonPower] = useState(null);
   const [standingsLeague, setStandingsLeague] = useState(null);
+
+  // ---- history view ----
+  const [historyTeamId, setHistoryTeamId] = useState(null);
+  const [historyData, setHistoryData] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   // ---- loading / error ----
   const [loadingMeta, setLoadingMeta] = useState(false);
@@ -119,10 +125,29 @@ function App() {
     }
   };
 
+  const fetchHistoryData = async (y, teamId) => {
+    if (!y || !teamId) return;
+    setLoadingHistory(true);
+    setError(null);
+    try {
+      const data = await getTeamHistory(y, teamId);
+      setHistoryData(data);
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Team history error");
+      setHistoryData(null);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const handleRefresh = () => {
     if (year && week) fetchWeekPowerData(year, week);
     if (year) fetchSeasonPowerData(year);
     if (standingsYear) fetchLeagueStandings(standingsYear);
+    if (tab === "history" && historyTeamId && year) {
+      fetchHistoryData(year, historyTeamId);
+    }
   };
 
   // ---- effects ----
@@ -187,7 +212,36 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standingsYear]);
 
+  // Auto-select default team when opening Team History
+  useEffect(() => {
+    if (tab !== "history") return;
+    if (historyTeamId) return;
+
+    const teams = seasonPower?.teams || [];
+    if (!teams.length) return;
+
+    const sorted = [...teams].sort(
+      (a, b) => (a.rank ?? 999) - (b.rank ?? 999)
+    );
+    const first = sorted[0];
+    if (first && first.teamId) {
+      setHistoryTeamId(first.teamId);
+    }
+  }, [tab, seasonPower, historyTeamId]);
+
+  // Fetch history when tab/year/team changes
+  useEffect(() => {
+    if (tab !== "history") return;
+    if (!historyTeamId || !year) return;
+    fetchHistoryData(year, historyTeamId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, year, historyTeamId]);
+
   // ---- UI helpers ----
+
+  const handleHistoryTeamChange = (teamId) => {
+    setHistoryTeamId(teamId);
+  };
 
   const renderTabs = () => (
     <div
@@ -370,7 +424,15 @@ function App() {
       )}
 
       {!loadingMeta && tab === "history" && (
-        <HistoryTab year={year} categories={CATEGORIES} />
+        <HistoryTab
+          year={year}
+          seasonPower={seasonPower}
+          historyData={historyData}
+          loadingHistory={loadingHistory}
+          selectedTeamId={historyTeamId}
+          onChangeTeam={handleHistoryTeamChange}
+          categories={CATEGORIES}
+        />
       )}
     </div>
   );

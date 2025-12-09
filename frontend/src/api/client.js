@@ -1,6 +1,7 @@
 // frontend/src/api/client.js
 
-const API_BASE = "http://127.0.0.1:5001";
+// Prefer env value, fall back to same-origin ("" = relative URLs like /api/meta)
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 // ------------------------
 // URL + fetch helpers

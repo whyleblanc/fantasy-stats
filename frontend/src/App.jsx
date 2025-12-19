@@ -5,6 +5,8 @@ import "./App.css";
 import OverviewTab from "./components/OverviewTab";
 import DashboardTab from "./components/DashboardTab";
 import HistoryTab from "./components/HistoryTab";
+import OpponentAnalysisTab from "./components/OpponentAnalysisTab";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 import {
   getMeta,
@@ -19,9 +21,11 @@ const CATEGORIES = ["FG%", "FT%", "3PM", "REB", "AST", "STL", "BLK", "DD", "PTS"
 
 function App() {
   // ---- nav ----
-  const [tab, setTab] = useState("overview"); // 'overview' | 'dashboard' | 'history'
+  const [tab, setTab] = useState("overview"); // 'overview' | 'dashboard' | 'history' | 'opponent'
 
   // ---- meta + filters ----
+  // We'll keep the same *shape* the rest of the app expects,
+  // but fill it from the new /api/meta fields.
   const [meta, setMeta] = useState({
     years: [],
     weeks: [],
@@ -39,7 +43,7 @@ function App() {
   const [seasonPower, setSeasonPower] = useState(null);
   const [standingsLeague, setStandingsLeague] = useState(null);
 
-  // ---- history view ----
+  // ---- history / team selection (shared with Opponent tab) ----
   const [historyTeamId, setHistoryTeamId] = useState(null);
   const [historyData, setHistoryData] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -51,23 +55,119 @@ function App() {
   const [loadingLeague, setLoadingLeague] = useState(false);
   const [error, setError] = useState(null);
 
-  // Latest season for ESPN standings
+  // Latest season for standings (only once meta is loaded)
   const standingsYear = useMemo(() => {
-    if (meta.years && meta.years.length > 0) {
-      return Math.max(...meta.years);
-    }
-    return year;
-  }, [meta.years, year]);
+    if (meta.years && meta.years.length > 0) return Math.max(...meta.years);
+    return null; // <— IMPORTANT: don’t default to selected year
+  }, [meta.years]);
+
+  useEffect(() => {
+    if (!standingsYear) return;          // <— prevents the initial 2025 call
+    fetchLeagueStandings(standingsYear);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [standingsYear]);
 
   // ---- API helpers ----
+
+  // Normalize the new /api/meta payload into the shape this app expects
+  const normalizeMeta = (raw, fallbackYear) => {
+    if (!raw || typeof raw !== "object") {
+      return meta;
+    }
+
+    // Years list: prefer explicit years, otherwise build from minYear/maxYear
+    let years = Array.isArray(raw.years) ? raw.years.slice() : null;
+    if (!years || years.length === 0) {
+      const minY = raw.minYear ?? raw.year ?? fallbackYear ?? 2014;
+      const maxY = raw.maxYear ?? raw.year ?? fallbackYear ?? minY;
+      const start = Number(minY);
+      const end = Number(maxY);
+      if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
+        years = [];
+        for (let y = start; y <= end; y += 1) {
+          years.push(y);
+        }
+      } else {
+        years = [];
+      }
+    }
+
+    // Weeks list: prefer availableWeeks, otherwise [1..maxWeek]
+    let weeks = [];
+    if (Array.isArray(raw.availableWeeks) && raw.availableWeeks.length > 0) {
+      weeks = raw.availableWeeks.slice().sort((a, b) => a - b);
+    } else if (typeof raw.maxWeek === "number" && raw.maxWeek > 0) {
+      for (let w = 1; w <= raw.maxWeek; w += 1) {
+        weeks.push(w);
+      }
+    } else if (Array.isArray(raw.weeks)) {
+      weeks = raw.weeks.slice();
+    }
+
+    const normalizedYear =
+      raw.year ??
+      raw.maxYear ??
+      fallbackYear ??
+      (years.length ? years[years.length - 1] : 2025);
+
+    const normalizedCurrentWeek =
+      raw.currentWeek ??
+      raw.maxWeek ??
+      (weeks.length ? weeks[weeks.length - 1] : null);
+
+    return {
+      years,
+      weeks,
+      year: normalizedYear,
+      currentWeek: normalizedCurrentWeek,
+      leagueName: raw.leagueName || meta.leagueName || "Fantasy Power Dashboard",
+      teamCount:
+        raw.teamCount ??
+        (Array.isArray(raw.teams) ? raw.teams.length : meta.teamCount ?? 0),
+    };
+  };
 
   const fetchMeta = async (y) => {
     setLoadingMeta(true);
     setError(null);
+
     try {
       const data = await getMeta(y);
-      setMeta(data);
-      return data;
+
+      // Build years from min/max
+      const minYear = Number(data.minYear ?? 2014);
+      const maxYear = Number(data.maxYear ?? data.year ?? y ?? 2014);
+
+      const years = [];
+      for (let yr = minYear; yr <= maxYear; yr += 1) years.push(yr);
+
+      // Prefer DB-driven weeks list
+      const weeksRaw = data.availableWeeks || data.weeks || [];
+      let weeks = Array.isArray(weeksRaw) ? [...weeksRaw].map(Number) : [];
+      weeks = weeks.filter((w) => Number.isFinite(w)).sort((a, b) => a - b);
+
+      // Current week = backend currentWeek if present, else max(weeks)
+      const currentWeek =
+        data.currentWeek != null
+          ? Number(data.currentWeek)
+          : (weeks.length ? weeks[weeks.length - 1] : null);
+
+      // Clamp: never show weeks beyond currentWeek
+      if (currentWeek != null) {
+        weeks = weeks.filter((w) => w <= currentWeek);
+      }
+
+      const normalized = {
+        years,
+        weeks,
+        year: Number(data.year ?? y ?? maxYear),
+        currentWeek,
+        leagueName: data.leagueName ?? "",
+        teamCount: data.teamCount ?? 0,
+      };
+
+      setMeta(normalized);
+      return normalized;
     } catch (e) {
       console.error(e);
       setError(e.message);
@@ -144,10 +244,11 @@ function App() {
   const handleRefresh = () => {
     if (year && week) fetchWeekPowerData(year, week);
     if (year) fetchSeasonPowerData(year);
-    if (standingsYear) fetchLeagueStandings(standingsYear);
+    if (standingsYear) fetchLeagueStandings(standingsYear, true);
     if (tab === "history" && historyTeamId && year) {
       fetchHistoryData(year, historyTeamId);
     }
+    // Opponent tab fetches its own data when year/team/range changes.
   };
 
   // ---- effects ----
@@ -173,6 +274,10 @@ function App() {
 
       fetchWeekPowerData(y, defaultWeek);
       fetchSeasonPowerData(y);
+
+      // NEW: standings for latest year after meta loads
+      const latest = data.years?.length ? Math.max(...data.years) : y;
+      if (latest) fetchLeagueStandings(latest);
     };
 
     bootstrap();
@@ -212,16 +317,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standingsYear]);
 
-  // Auto-select default team when opening Team History
+  // Auto-select default team when opening Team History or Opponent tab
   useEffect(() => {
-    if (tab !== "history") return;
+    if (tab !== "history" && tab !== "opponent") return;
     if (historyTeamId) return;
 
     const teams = seasonPower?.teams || [];
     if (!teams.length) return;
 
     const sorted = [...teams].sort(
-      (a, b) => (a.rank ?? 999) - (b.rank ?? 999)
+      (a, b) => (a.rank ?? 999) - (b.rank ?? 999),
     );
     const first = sorted[0];
     if (first && first.teamId) {
@@ -229,7 +334,7 @@ function App() {
     }
   }, [tab, seasonPower, historyTeamId]);
 
-  // Fetch history when tab/year/team changes
+  // Fetch history when tab/year/team changes (only for History tab)
   useEffect(() => {
     if (tab !== "history") return;
     if (!historyTeamId || !year) return;
@@ -256,6 +361,7 @@ function App() {
         { id: "overview", label: "Overview" },
         { id: "dashboard", label: "Dashboard" },
         { id: "history", label: "Team History" },
+        { id: "opponent", label: "Opponent Analysis" },
       ].map((t) => {
         const active = tab === t.id;
         return (
@@ -315,29 +421,31 @@ function App() {
         </select>
       </div>
 
-      <div>
-        <label style={{ fontSize: "0.9rem" }}>Week</label>
-        <select
-          value={week}
-          onChange={(e) => setWeek(Number(e.target.value))}
-          style={{
-            display: "block",
-            marginTop: "4px",
-            padding: "4px 8px",
-            borderRadius: "6px",
-            border: "1px solid #334155",
-            background: "#020617",
-            color: "#e5e7eb",
-            minWidth: "90px",
-          }}
-        >
-          {meta.weeks?.map((w) => (
-            <option key={w} value={w}>
-              {w}
-            </option>
-          ))}
-        </select>
-      </div>
+      {tab !== "opponent" && (
+        <div>
+          <label style={{ fontSize: "0.9rem" }}>Week</label>
+          <select
+            value={week}
+            onChange={(e) => setWeek(Number(e.target.value))}
+            style={{
+              display: "block",
+              marginTop: "4px",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid #334155",
+              background: "#020617",
+              color: "#e5e7eb",
+              minWidth: "90px",
+            }}
+          >
+            {meta.weeks?.map((w) => (
+              <option key={w} value={w}>
+                {w}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <button
         onClick={handleRefresh}
@@ -412,7 +520,8 @@ function App() {
       )}
 
       {!loadingMeta && tab === "dashboard" && (
-        <DashboardTab
+        <ErrorBoundary>
+          <DashboardTab
           year={year}
           week={week}
           weekPower={weekPower}
@@ -421,14 +530,28 @@ function App() {
           loadingSeason={loadingSeason}
           categories={CATEGORIES}
         />
+        </ErrorBoundary>
       )}
 
       {!loadingMeta && tab === "history" && (
+        <ErrorBoundary>
         <HistoryTab
           year={year}
           seasonPower={seasonPower}
           historyData={historyData}
           loadingHistory={loadingHistory}
+          selectedTeamId={historyTeamId}
+          onChangeTeam={handleHistoryTeamChange}
+          categories={CATEGORIES}
+        />
+        </ErrorBoundary>
+      )}
+
+      {!loadingMeta && tab === "opponent" && (
+        <OpponentAnalysisTab
+          year={year}
+          availableYears={meta.years}
+          seasonPower={seasonPower}
           selectedTeamId={historyTeamId}
           onChangeTeam={handleHistoryTeamChange}
           categories={CATEGORIES}

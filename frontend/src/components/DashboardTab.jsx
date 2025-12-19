@@ -18,17 +18,15 @@ function DashboardTab({
 
   const weekTeams = weekPower?.teams || [];
   const seasonTeams = seasonPower?.teams || [];
+  const cats = Array.isArray(categories) ? categories : [];
 
   const handleSort = (field) => {
     if (sortField === field) {
       setSortDirection((prev) => (prev === "ASC" ? "DESC" : "ASC"));
     } else {
       setSortField(field);
-      if (field === "RANK") {
-        setSortDirection("ASC");
-      } else {
-        setSortDirection("DESC");
-      }
+      // default rank sorts best → worst, others worst → best
+      setSortDirection(field === "RANK" ? "ASC" : "DESC");
     }
   };
 
@@ -43,13 +41,11 @@ function DashboardTab({
     const na = typeof a === "number" ? a : Number.NEGATIVE_INFINITY;
     const nb = typeof b === "number" ? b : Number.NEGATIVE_INFINITY;
     if (na === nb) return 0;
-    if (sortDirection === "ASC") return na - nb;
-    return nb - na;
+    return sortDirection === "ASC" ? na - nb : nb - na;
   };
 
   const sortedWeekTeams = useMemo(() => {
     if (!weekTeams.length) return [];
-
     const copy = [...weekTeams];
 
     return copy.sort((a, b) => {
@@ -65,6 +61,7 @@ function DashboardTab({
         return compareNumbers(a.totalZ, b.totalZ);
       }
 
+      // Category sort
       const key = `${sortField}_z`;
       const av = a.perCategoryZ?.[key];
       const bv = b.perCategoryZ?.[key];
@@ -74,7 +71,6 @@ function DashboardTab({
 
   const sortedSeasonTeams = useMemo(() => {
     if (!seasonTeams.length) return [];
-
     const copy = [...seasonTeams];
 
     return copy.sort((a, b) => {
@@ -93,10 +89,7 @@ function DashboardTab({
         return compareNumbers(a.sumTotalZ, b.sumTotalZ);
       }
 
-      const key = `${sortField}_z`;
-      const av = a.perCategoryZSeason?.[key];
-      const bv = b.perCategoryZSeason?.[key];
-      return compareNumbers(av, bv);
+      return 0;
     });
   }, [seasonTeams, sortField, sortDirection]);
 
@@ -168,7 +161,7 @@ function DashboardTab({
               <>
                 <option value="RANK">Rank</option>
                 <option value="TOTAL_Z">Total Z</option>
-                {categories.map((c) => (
+                {cats.map((c) => (
                   <option key={c} value={c}>
                     {c} Z
                   </option>
@@ -254,7 +247,7 @@ function DashboardTab({
                         sortDirection={sortDirection}
                         onSort={handleSort}
                       />
-                      {categories.map((cat) => (
+                      {cats.map((cat) => (
                         <SortHeader
                           key={cat}
                           label={cat}
@@ -288,7 +281,7 @@ function DashboardTab({
                           <td style={{ ...tdStyle, fontWeight: 600 }}>
                             {totalZ.toFixed(2)}
                           </td>
-                          {categories.map((cat) => {
+                          {cats.map((cat) => {
                             const keyName = `${cat}_z`;
                             return renderZCell(perCat[keyName] ?? 0, keyName);
                           })}

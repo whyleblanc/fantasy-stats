@@ -75,7 +75,7 @@ function HistoryControls({
               minWidth: "130px",
             }}
           >
-            {categories.map((c) => (
+            {cats.map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>

@@ -38,8 +38,8 @@ function getMeta(year) {
   return fetchJson("/api/meta", year != null ? { year } : {});
 }
 
-function getLeague(year) {
-  return fetchJson("/api/league", { year });
+function getLeague(year, refresh = false) {
+  return fetchJson("/api/league", { year, refresh: refresh ? 1 : 0 });
 }
 
 function getWeekPower(year, week, refresh = false) {
@@ -81,6 +81,77 @@ function getTeamHistory(year, teamId, refresh = false) {
 }
 
 // ------------------------
+// Opponent endpoints
+// ------------------------
+
+/**
+ * getOpponentMatrix
+ *
+ * Overloaded:
+ *  - Legacy single-year:
+ *      getOpponentMatrix(year, teamId, refresh?)
+ *  - Multi-year range:
+ *      getOpponentMatrix({
+ *        startYear,
+ *        endYear,
+ *        teamId,
+ *        currentOwnerEraOnly?: boolean,
+ *        refresh?: boolean
+ *      })
+ */
+function getOpponentMatrix(arg1, teamId, refresh = false) {
+  let params;
+
+  if (typeof arg1 === "object" && arg1 !== null) {
+    // New object-style call
+    params = { ...arg1 };
+  } else {
+    // Legacy positional call
+    params = {
+      year: arg1,
+      teamId,
+      refresh: refresh ? 1 : 0,
+    };
+  }
+
+  if ("currentOwnerEraOnly" in params) {
+    params.currentOwnerEraOnly = params.currentOwnerEraOnly ? 1 : 0;
+  }
+
+  if ("refresh" in params && typeof params.refresh === "boolean") {
+    params.refresh = params.refresh ? 1 : 0;
+  }
+
+  return fetchJson("/api/analysis/opponent-matrix", params);
+}
+
+// (Still available if you ever want the single-team cat heatmap)
+function getOpponentHeatmap(year, teamId, refresh = false) {
+  return fetchJson("/api/analysis/opponent-heatmap", {
+    year,
+    teamId,
+    refresh: refresh ? 1 : 0,
+  });
+}
+
+// Thin convenience wrapper for range mode, if you want it elsewhere
+function getOpponentMatrixMulti(
+  startYear,
+  endYear,
+  teamId,
+  currentOwnerEraOnly = false,
+  refresh = false
+) {
+  return getOpponentMatrix({
+    startYear,
+    endYear,
+    teamId,
+    currentOwnerEraOnly,
+    refresh,
+  });
+}
+
+// ------------------------
 // Unified API object
 // ------------------------
 export const api = {
@@ -91,6 +162,9 @@ export const api = {
   getWeekZscores,
   getSeasonZscores,
   getTeamHistory,
+  getOpponentMatrix,
+  getOpponentHeatmap,
+  getOpponentMatrixMulti,
 };
 
 // Also export individual functions if needed
@@ -102,4 +176,7 @@ export {
   getWeekZscores,
   getSeasonZscores,
   getTeamHistory,
+  getOpponentMatrix,
+  getOpponentHeatmap,
+  getOpponentMatrixMulti,
 };

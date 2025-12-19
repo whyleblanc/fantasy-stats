@@ -3,7 +3,7 @@
 from flask import Blueprint, render_template_string, request
 
 from webapp.config import MIN_YEAR, MAX_YEAR
-from webapp.services import build_league_payload
+from webapp.legacy_services import build_league_payload
 
 legacy_bp = Blueprint("legacy", __name__, url_prefix="/legacy")
 

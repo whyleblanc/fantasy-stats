@@ -2,6 +2,7 @@
 import { thStyle, tdStyle, renderZCell } from "../ui/table";
 
 function HistoryTable({ history, categories }) {
+  const cats = Array.isArray(categories) ? categories : [];
   return (
     <section
       style={{
@@ -35,7 +36,7 @@ function HistoryTable({ history, categories }) {
               <th style={thStyle}>Rank</th>
               <th style={thStyle}>Total Z</th>
               <th style={thStyle}>Cumulative Z</th>
-              {categories.map((cat) => (
+              {cats.map((cat) => (
                 <th key={cat} style={thStyle}>
                   {cat} Z
                 </th>
@@ -60,7 +61,7 @@ function HistoryTable({ history, categories }) {
                     {totalZ.toFixed(2)}
                   </td>
                   <td style={tdStyle}>{cumZ.toFixed(2)}</td>
-                  {categories.map((cat) => {
+                  {cats.map((cat) => {
                     const keyName = `${cat}_z`;
                     return renderZCell(
                       zscores[keyName] ?? 0,

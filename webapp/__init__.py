@@ -1,10 +1,16 @@
 # webapp/__init__.py
 
 import os
+
+# Load .env for ANY entrypoint (python app.py, flask run, gunicorn, etc.)
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, send_from_directory, abort
 from flask_cors import CORS
 
 from db import init_db
+import models_normalized
 from .config import Config
 from .routes.meta import meta_bp
 from .routes.league import league_bp
@@ -31,6 +37,12 @@ def create_app() -> Flask:
 
     # Core config
     app.config.from_object(Config)
+    print(
+        "[create_app] ENV:",
+        "LEAGUE_ID=", os.getenv("LEAGUE_ID"),
+        "ESPN_S2=", bool(os.getenv("ESPN_S2")),
+        "ESPN_SWID=", bool(os.getenv("ESPN_SWID")),
+    )
 
     # CORS: allow dev frontend (5173) to hit /api/* on 5001
     CORS(app, resources={r"/api/*": {"origins": "*"}})

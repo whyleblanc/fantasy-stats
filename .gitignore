@@ -35,3 +35,10 @@ db.py
 
 # Frontend env files
 frontend/.env*
+
+# Ignore GPT knowledge and private doctrine files
+GPT_*.md
+GPT_*.zip
+gpt_knowledge_bundle/
+docs/gpt/
+PROJECT_CONTEXT.md

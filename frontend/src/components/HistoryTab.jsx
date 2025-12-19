@@ -21,6 +21,8 @@ function HistoryTab({
   const history = historyData?.history || [];
   const teamName = historyData?.teamName || "";
 
+  const cats = Array.isArray(categories) ? categories : []; // safe local
+
   // comparison state
   const [comparisonTeamId, setComparisonTeamId] = useState(null);
   const [comparisonHistoryData, setComparisonHistoryData] = useState(null);
@@ -28,9 +30,7 @@ function HistoryTab({
 
   // chart state
   const [chartMode, setChartMode] = useState("totalZ"); // 'totalZ' | 'rank' | 'category'
-  const [chartCategory, setChartCategory] = useState(
-    categories[0] || "FG%"
-  );
+  const [chartCategory, setChartCategory] = useState(cats[0] || "FG%");
   const [weekLimit, setWeekLimit] = useState(null);
 
   // reset week limit when history changes
@@ -89,16 +89,13 @@ function HistoryTab({
   const chartData = useMemo(() => {
     if (!primaryFiltered.length) return [];
 
-    const compMap = new Map(
-      comparisonFiltered.map((h) => [h.week, h])
-    );
+    const compMap = new Map(comparisonFiltered.map((h) => [h.week, h]));
 
     return primaryFiltered.map((h) => {
       const week = h.week;
       const comp = compMap.get(week);
 
-      const totalZ =
-        typeof h.totalZ === "number" ? Number(h.totalZ.toFixed(3)) : 0;
+      const totalZ = typeof h.totalZ === "number" ? Number(h.totalZ.toFixed(3)) : 0;
       const leagueAvgTotalZ =
         typeof h.leagueAverageTotalZ === "number"
           ? Number(h.leagueAverageTotalZ.toFixed(3))
@@ -111,10 +108,7 @@ function HistoryTab({
       const leagueZscores = h.leagueAverageZscores || {};
 
       const catKey = `${chartCategory}_z`;
-      const catZ =
-        typeof zscores[catKey] === "number"
-          ? Number(zscores[catKey].toFixed(3))
-          : 0;
+      const catZ = typeof zscores[catKey] === "number" ? Number(zscores[catKey].toFixed(3)) : 0;
       const leagueCatZ =
         typeof leagueZscores[catKey] === "number"
           ? Number(leagueZscores[catKey].toFixed(3))
@@ -125,19 +119,11 @@ function HistoryTab({
       let compCatZ = null;
 
       if (comp) {
-        const cTotal =
-          typeof comp.totalZ === "number"
-            ? Number(comp.totalZ.toFixed(3))
-            : 0;
-        const cRank =
-          typeof comp.rank === "number" ? comp.rank : null;
-        const cRankInv =
-          typeof cRank === "number" ? -cRank : null;
+        const cTotal = typeof comp.totalZ === "number" ? Number(comp.totalZ.toFixed(3)) : 0;
+        const cRank = typeof comp.rank === "number" ? comp.rank : null;
+        const cRankInv = typeof cRank === "number" ? -cRank : null;
         const cZscores = comp.zscores || {};
-        const cCatZ =
-          typeof cZscores[catKey] === "number"
-            ? Number(cZscores[catKey].toFixed(3))
-            : 0;
+        const cCatZ = typeof cZscores[catKey] === "number" ? Number(cZscores[catKey].toFixed(3)) : 0;
 
         compTotalZ = cTotal;
         compRankInverted = cRankInv;
@@ -161,12 +147,7 @@ function HistoryTab({
   // summary stats
   const summary = useMemo(() => {
     if (!history.length) {
-      return {
-        bestWeek: null,
-        worstWeek: null,
-        avgRank: null,
-        finalRank: null,
-      };
+      return { bestWeek: null, worstWeek: null, avgRank: null, finalRank: null };
     }
 
     let best = history[0];
@@ -191,12 +172,7 @@ function HistoryTab({
     const avgRank = rankCount ? rankSum / rankCount : null;
     const finalRankEntry = history[history.length - 1];
 
-    return {
-      bestWeek: best,
-      worstWeek: worst,
-      avgRank,
-      finalRank: finalRankEntry?.rank ?? null,
-    };
+    return { bestWeek: best, worstWeek: worst, avgRank, finalRank: finalRankEntry?.rank ?? null };
   }, [history]);
 
   const maxWeekForSlider = useMemo(() => {
@@ -204,7 +180,6 @@ function HistoryTab({
     return Math.max(...history.map((h) => h.week || 0));
   }, [history]);
 
-  // ---- render ----
   return (
     <div>
       <HistoryHeader
@@ -242,7 +217,7 @@ function HistoryTab({
             onChangeChartMode={setChartMode}
             chartCategory={chartCategory}
             onChangeChartCategory={setChartCategory}
-            categories={categories}
+            categories={cats}
             maxWeekForSlider={maxWeekForSlider}
             weekLimit={weekLimit}
             onChangeWeekLimit={setWeekLimit}
@@ -255,7 +230,7 @@ function HistoryTab({
             comparisonTeamId={comparisonTeamId}
           />
 
-          <HistoryTable history={history} categories={categories} />
+          <HistoryTable history={history} categories={cats} />
         </>
       )}
     </div>

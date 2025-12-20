@@ -29,10 +29,6 @@ frontend/dist/
 # Explicit DB file
 fantasy_stats.db
 
-# Python DB script (catch anywhere)
-db.py
-**/db.py
-
 # Frontend env files
 frontend/.env*
 

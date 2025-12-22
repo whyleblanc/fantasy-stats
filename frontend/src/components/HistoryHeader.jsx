@@ -14,6 +14,10 @@ function HistoryHeader({
     onChangeTeam?.(value);
   };
 
+  const teamOptions = Array.isArray(teams)
+    ? [...teams].sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999))
+    : [];
+
   const handleComparisonChange = (e) => {
     const value = Number(e.target.value);
     if (!value) {
@@ -53,11 +57,11 @@ function HistoryHeader({
           <option value="" disabled>
             Select a team…
           </option>
-          {teams.map((t) => (
-            <option key={t.teamId} value={t.teamId}>
-              {t.teamName}
-            </option>
-          ))}
+        {teamOptions.map((t) => (
+          <option key={t.teamId} value={t.teamId} disabled={t.teamId === selectedTeamId}>
+            {t.rank ? `#${t.rank} · ` : ""}{t.teamName}
+          </option>
+        ))}
         </select>
       </div>
 
@@ -79,11 +83,11 @@ function HistoryHeader({
           }}
         >
           <option value="">(None)</option>
-          {teams.map((t) => (
-            <option key={t.teamId} value={t.teamId}>
-              {t.teamName}
-            </option>
-          ))}
+        {teamOptions.map((t) => (
+          <option key={t.teamId} value={t.teamId} disabled={t.teamId === selectedTeamId}>
+            {t.rank ? `#${t.rank} · ` : ""}{t.teamName}
+          </option>
+        ))}
         </select>
       </div>
 

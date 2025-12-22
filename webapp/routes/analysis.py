@@ -1,21 +1,31 @@
 from __future__ import annotations
-from sqlalchemy import func
+
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import func
 
 from analysis import (
     get_opponent_matrix_cached,
     get_opponent_matrix_multi_cached,
     get_opponent_zdiff_matrix_cached,
-    get_team_history_cached,
 )
 from analysis.constants import CATEGORIES, CAT_TO_DB_COL
 from analysis.owners import build_owners_map
+from analysis.owners import get_owner_start_year
+from models_aggregates import OpponentMatrixAggYear
+
 from db import SessionLocal, WeekTeamStats
-from models_normalized import StatSeason, StatWeekly, Team, Matchup
+from models_normalized import StatWeekly, Team, Matchup  # StatSeason only needed if you use season fallback
 from webapp.config import LEAGUE_ID, MAX_YEAR
+from webapp.services.opponent_matrix_db import get_opponent_matrix_multi_db
+from webapp.services.opponent_matrix_agg_year import get_opponent_matrix_from_agg_year
+
+from webapp.services.team_history_agg import (
+    get_team_history_from_agg,
+    rebuild_team_history_agg,
+)
 
 analysis_bp = Blueprint("analysis", __name__, url_prefix="/api/analysis")
 
@@ -23,6 +33,143 @@ analysis_bp = Blueprint("analysis", __name__, url_prefix="/api/analysis")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _bool_arg(name: str, default: bool = False) -> bool:
+    v = request.args.get(name, None)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _row_to_ui_shape(r: OpponentMatrixAggYear) -> dict:
+    def cat_block(prefix: str):
+        w = int(getattr(r, f"{prefix}_w") or 0)
+        l = int(getattr(r, f"{prefix}_l") or 0)
+        t = int(getattr(r, f"{prefix}_t") or 0)
+        n = int(getattr(r, f"{prefix}_diff_n") or 0)
+        s = float(getattr(r, f"{prefix}_diff_sum") or 0.0)
+        total = w + l + t
+        return {
+            "wins": w,
+            "losses": l,
+            "ties": t,
+            "winPct": (w / total) if total else 0.0,
+            "avgDiff": (s / n) if n else 0.0,
+        }
+
+    wins = int(r.wins or 0)
+    losses = int(r.losses or 0)
+    ties = int(r.ties or 0)
+    matchups = int(r.matchups or 0)
+    total = wins + losses + ties
+
+    return {
+        "opponentTeamId": int(r.opponent_team_id),
+        "opponentName": r.opponent_name or "",
+        "matchups": matchups,
+        "overall": {
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "matchups": matchups,
+            "winPct": (wins / total) if total else 0.0,
+        },
+        "categories": {
+            "FG%": cat_block("fg"),
+            "FT%": cat_block("ft"),
+            "3PM": cat_block("three_pm"),
+            "REB": cat_block("reb"),
+            "AST": cat_block("ast"),
+            "STL": cat_block("stl"),
+            "BLK": cat_block("blk"),
+            "DD": cat_block("dd"),
+            "PTS": cat_block("pts"),
+        },
+    }
+
+
+def _merge_ui_rows(rows: list[dict]) -> list[dict]:
+    """
+    Merge multiple year rows (same opponent) into one combined row.
+    """
+    merged = {}
+
+    for row in rows:
+        oid = int(row.get("opponentTeamId") or 0)
+        if not oid:
+            continue
+
+        m = merged.setdefault(
+            oid,
+            {
+                "opponentTeamId": oid,
+                "opponentName": row.get("opponentName") or "",
+                "matchups": 0,
+                "overall": {"wins": 0, "losses": 0, "ties": 0, "matchups": 0, "winPct": 0.0},
+                "categories": {},
+            },
+        )
+
+        # overall
+        m["matchups"] += int(row.get("matchups") or 0)
+        o = row.get("overall") or {}
+        m["overall"]["wins"] += int(o.get("wins") or 0)
+        m["overall"]["losses"] += int(o.get("losses") or 0)
+        m["overall"]["ties"] += int(o.get("ties") or 0)
+        m["overall"]["matchups"] += int(o.get("matchups") or 0)
+
+        # categories
+        cats = row.get("categories") or {}
+        for cat, blk in cats.items():
+            cur = m["categories"].setdefault(
+                cat,
+                {"wins": 0, "losses": 0, "ties": 0, "diffSum": 0.0, "diffN": 0},
+            )
+            cur["wins"] += int(blk.get("wins") or 0)
+            cur["losses"] += int(blk.get("losses") or 0)
+            cur["ties"] += int(blk.get("ties") or 0)
+
+            # We can't perfectly merge avgDiff without sums, so convert back into sums.
+            # blk.avgDiff = diffSum/diffN, but we don't have diffN in UI shape.
+            # So: just approximate by weighting by total (wins+losses+ties) as N.
+            # Better: keep diff_n and diff_sum in UI, but you don't today.
+            # We'll approximate using matchups as weight:
+            weight = (int(blk.get("wins") or 0) + int(blk.get("losses") or 0) + int(blk.get("ties") or 0))
+            cur["diffSum"] += float(blk.get("avgDiff") or 0.0) * float(weight)
+            cur["diffN"] += int(weight)
+
+    # finalize
+    out = []
+    for oid, m in merged.items():
+        # overall winPct
+        total = m["overall"]["wins"] + m["overall"]["losses"] + m["overall"]["ties"]
+        m["overall"]["winPct"] = (m["overall"]["wins"] / total) if total else 0.0
+
+        # per-cat finalize avgDiff + winPct
+        finalized_cats = {}
+        for cat, cur in m["categories"].items():
+            total_cat = cur["wins"] + cur["losses"] + cur["ties"]
+            finalized_cats[cat] = {
+                "wins": cur["wins"],
+                "losses": cur["losses"],
+                "ties": cur["ties"],
+                "winPct": (cur["wins"] / total_cat) if total_cat else 0.0,
+                "avgDiff": (cur["diffSum"] / cur["diffN"]) if cur["diffN"] else 0.0,
+            }
+        m["categories"] = finalized_cats
+
+        out.append(m)
+
+    # sort: best overall winPct then most matchups
+    out.sort(key=lambda r: (r["overall"]["winPct"], r["matchups"]), reverse=True)
+    return out
+
+def _bool_arg(name: str, default: bool = False) -> bool:
+    raw = request.args.get(name, None)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "t")
+
 
 def _completed_weeks_from_matchups(session, season: int) -> List[int]:
     rows = (
@@ -155,12 +302,6 @@ def _raw_stats_from_statweekly_row(w: StatWeekly) -> Dict[str, Optional[float]]:
 
 
 def _week_power_from_stats_weekly(session, season: int, week: int) -> Dict[str, Any]:
-    """
-    Fallback when WeekTeamStats isn't present for a week:
-    compute week power directly from stats_weekly + teams.
-
-    Returns teamId as ESPN team id.
-    """
     weekly_rows = (
         session.query(StatWeekly, Team)
         .join(Team, StatWeekly.team_id == Team.id)
@@ -251,7 +392,6 @@ def _week_power_from_stats_weekly(session, season: int, week: int) -> Dict[str, 
 
 
 def _season_power_from_weekteamstats(session, season: int) -> Dict[str, Any]:
-    # Use matchup completion as the source of truth for "completed weeks"
     completed_weeks = _completed_weeks_from_matchups(session, season)
 
     rows_q = (
@@ -269,7 +409,6 @@ def _season_power_from_weekteamstats(session, season: int) -> Dict[str, Any]:
         )
     )
 
-    # Clamp if we have completed weeks (this fixes 2026)
     if completed_weeks:
         rows_q = rows_q.filter(WeekTeamStats.week.in_(completed_weeks))
 
@@ -280,12 +419,7 @@ def _season_power_from_weekteamstats(session, season: int) -> Dict[str, Any]:
     )
 
     if not rows:
-        return {
-            "season": season,
-            "teams": [],
-            "noData": True,
-            "source": "week_team_stats",
-        }
+        return {"season": season, "teams": [], "noData": True, "source": "week_team_stats"}
 
     teams: List[Dict[str, Any]] = []
     for r in rows:
@@ -315,6 +449,11 @@ def _season_power_from_weekteamstats(session, season: int) -> Dict[str, Any]:
     return _attach_owners_to_payload(season, payload)
 
 
+# If you already have a real stats_season fallback elsewhere, use it.
+def _season_power_from_stats_season(session, season: int) -> Dict[str, Any]:
+    return {"season": season, "teams": [], "noData": True, "source": "stats_season_fallback_missing"}
+
+
 # ---------------------------------------------------------------------------
 # WEEK Z-SCORES – DB-backed (WeekTeamStats)
 # ---------------------------------------------------------------------------
@@ -338,9 +477,7 @@ def week_zscores_api():
         )
 
         if not rows:
-            return jsonify(
-                {"season": season, "week": week, "categories": CATEGORIES, "teams": [], "noData": True}
-            )
+            return jsonify({"season": season, "week": week, "categories": CATEGORIES, "teams": [], "noData": True})
 
         cat_map = _category_name_map()
         teams: List[Dict[str, Any]] = []
@@ -355,7 +492,7 @@ def week_zscores_api():
 
             teams.append(
                 {
-                    "teamId": int(r.team_id),      # WeekTeamStats.team_id is ESPN team id
+                    "teamId": int(r.team_id),
                     "teamName": r.team_name,
                     "total_z": float(r.total_z or 0.0),
                     "category_z": cat_z,
@@ -368,28 +505,12 @@ def week_zscores_api():
 
         _add_legacy_zscore_aliases_for_week(teams)
 
-        payload = {
-            "season": season,
-            "week": week,
-            "categories": CATEGORIES,
-            "teams": teams,
-            "source": "week_team_stats",
-        }
+        payload = {"season": season, "week": week, "categories": CATEGORIES, "teams": teams, "source": "week_team_stats"}
         return jsonify(_attach_owners_to_payload(season, payload))
 
     except Exception as e:
         session.rollback()
-        return (
-            jsonify(
-                {
-                    "error": "Failed to compute weekly z-scores",
-                    "year": season,
-                    "week": week,
-                    "details": str(e),
-                }
-            ),
-            500,
-        )
+        return jsonify({"error": "Failed to compute weekly z-scores", "year": season, "week": week, "details": str(e)}), 500
     finally:
         session.close()
 
@@ -411,12 +532,10 @@ def season_zscores_api():
             WeekTeamStats.year == season,
             WeekTeamStats.is_league_average == False,
         )
-
         if weeks_with_data:
             q = q.filter(WeekTeamStats.week.in_(weeks_with_data))
 
         rows: List[WeekTeamStats] = q.all()
-
         if not rows:
             return jsonify({"season": season, "categories": CATEGORIES, "teams": [], "noData": True})
 
@@ -432,7 +551,7 @@ def season_zscores_api():
         )
 
         for r in rows:
-            rec = agg[r.team_id]
+            rec = agg[int(r.team_id)]
             rec["team_name"] = r.team_name
             rec["weeks"] += 1
             rec["sum_total_z"] += float(r.total_z or 0.0)
@@ -452,17 +571,16 @@ def season_zscores_api():
             cat_z: Dict[str, float] = {}
             for label in CATEGORIES:
                 cnt = rec["count_cat"][label]
-                if cnt == 0:
-                    continue
-                cat_z[label] = rec["sum_cat_z"][label] / cnt
+                if cnt:
+                    cat_z[label] = rec["sum_cat_z"][label] / cnt
 
             teams.append(
                 {
                     "teamId": int(tid),
                     "teamName": rec["team_name"],
                     "weeks": int(weeks),
-                    "avg_total_z": avg_total,
-                    "sum_total_z": rec["sum_total_z"],
+                    "avg_total_z": float(avg_total),
+                    "sum_total_z": float(rec["sum_total_z"]),
                     "category_z": cat_z,
                 }
             )
@@ -473,20 +591,12 @@ def season_zscores_api():
 
         _add_legacy_zscore_aliases_for_season(teams, avg_key="avg_total_z", sum_key="sum_total_z")
 
-        payload = {
-            "season": season,
-            "categories": CATEGORIES,
-            "teams": teams,
-            "source": "week_team_stats",
-        }
+        payload = {"season": season, "categories": CATEGORIES, "teams": teams, "source": "week_team_stats"}
         return jsonify(_attach_owners_to_payload(season, payload))
 
     except Exception as e:
         session.rollback()
-        return (
-            jsonify({"error": "Failed to compute season z-scores", "year": season, "details": str(e)}),
-            500,
-        )
+        return jsonify({"error": "Failed to compute season z-scores", "year": season, "details": str(e)}), 500
     finally:
         session.close()
 
@@ -499,7 +609,6 @@ def season_zscores_api():
 def week_power_api():
     season = request.args.get("year", default=MAX_YEAR, type=int)
     week = request.args.get("week", default=1, type=int)
-    _ = request.args.get("refresh", default=0, type=int)  # no-op
 
     session = SessionLocal()
     try:
@@ -514,7 +623,6 @@ def week_power_api():
             .all()
         )
 
-        # If no advanced cache row exists, compute from stats_weekly
         if not rows:
             return jsonify(_week_power_from_stats_weekly(session, season, week))
 
@@ -544,14 +652,13 @@ def week_power_api():
                     continue
                 cat_z[label] = float(z_val)
 
-            espn_tid = int(r.team_id)  # WeekTeamStats.team_id is ESPN team id
+            espn_tid = int(r.team_id)
             team_entry: Dict[str, Any] = {
                 "teamId": espn_tid,
                 "teamName": r.team_name,
                 "power_score": float(r.total_z or 0.0),
                 "category_z": cat_z,
             }
-
             if espn_tid in raw_map:
                 team_entry["raw_stats"] = raw_map[espn_tid]
 
@@ -565,33 +672,23 @@ def week_power_api():
 
         _add_legacy_zscore_aliases_for_week(teams)
 
-        payload: Dict[str, Any] = {
-            "season": season,
-            "week": week,
-            "categories": CATEGORIES,
-            "teams": teams,
-            "source": "week_team_stats",
-        }
+        payload: Dict[str, Any] = {"season": season, "week": week, "categories": CATEGORIES, "teams": teams, "source": "week_team_stats"}
         return jsonify(_attach_owners_to_payload(season, payload))
 
     except Exception as e:
         session.rollback()
-        return (
-            jsonify({"error": "Failed to compute weekly power", "year": season, "week": week, "details": str(e)}),
-            500,
-        )
+        return jsonify({"error": "Failed to compute weekly power", "year": season, "week": week, "details": str(e)}), 500
     finally:
         session.close()
 
 
 # ---------------------------------------------------------------------------
-# SEASON POWER – stats_season fallback
+# SEASON POWER – week_team_stats, fallback to stats_season
 # ---------------------------------------------------------------------------
 
 @analysis_bp.route("/season-power")
 def season_power_api():
     season = request.args.get("year", default=MAX_YEAR, type=int)
-    _ = request.args.get("refresh", default=0, type=int)
 
     session = SessionLocal()
     try:
@@ -607,39 +704,55 @@ def season_power_api():
 
 
 # ---------------------------------------------------------------------------
-# TEAM HISTORY – legacy ESPN-backed (soft-fail)
+# TEAM HISTORY – DB-backed (TeamHistoryAgg), with rebuild on demand
 # ---------------------------------------------------------------------------
 
 @analysis_bp.route("/team-history")
 def team_history_api():
     year = request.args.get("year", default=MAX_YEAR, type=int)
     team_id = request.args.get("teamId", type=int)
-    refresh = request.args.get("refresh", default=0, type=int) == 1
+    refresh = _bool_arg("refresh", False)
 
     if team_id is None:
         return jsonify({"error": "Missing required parameter 'teamId'", "year": year}), 400
 
+    categories = CATEGORIES[:]  # canonical list
+
+    session = SessionLocal()
     try:
-        payload = get_team_history_cached(year, team_id, force_refresh=refresh)
-        if isinstance(payload, dict) and "teams" in payload:
-            payload = _attach_owners_to_payload(year, payload)
+        if refresh:
+            rebuild_team_history_agg(session, year=year, team_id=team_id, force=True)
+            session.commit()
+
+        payload = get_team_history_from_agg(session, year=year, team_id=team_id, categories=categories)
+
+        if not payload.get("history"):
+            rebuild_team_history_agg(session, year=year, team_id=team_id, force=True)
+            session.commit()
+            payload = get_team_history_from_agg(session, year=year, team_id=team_id, categories=categories)
+
+        payload["source"] = "db_team_history_agg"
         return jsonify(payload)
+
     except Exception as e:
+        session.rollback()
         return jsonify(
             {
                 "year": year,
                 "teamId": team_id,
+                "teamName": "",
                 "history": [],
-                "weeks": [],
-                "source": "espn_fallback_error",
-                "error": "Failed to compute team history",
+                "source": "db_team_history_agg_error",
+                "error": "Failed to load team history",
                 "details": str(e),
             }
-        )
+        ), 500
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
-# OPPONENT ENDPOINTS – legacy ESPN-backed (soft-fail)
+# OPPONENT ENDPOINTS – cached/legacy, but safe bool parsing
 # ---------------------------------------------------------------------------
 
 @analysis_bp.route("/opponent-matrix")
@@ -649,171 +762,147 @@ def opponent_matrix_api():
     start_year = request.args.get("startYear", type=int)
     end_year = request.args.get("endYear", type=int)
     team_id = request.args.get("teamId", type=int)
-    refresh = request.args.get("refresh", default=0, type=int) == 1
-    era_only = request.args.get("currentOwnerEraOnly", default=0, type=int) == 1
 
+    refresh = _bool_arg("refresh", False) or _bool_arg("forceRefresh", False)
+    era_only = _bool_arg("currentOwnerEraOnly", False)
+
+    # normalize range
+    if start_year is None and end_year is None:
+        start_year = year
+        end_year = year
+    else:
+        if start_year is None:
+            start_year = year
+        if end_year is None:
+            end_year = start_year
+        if end_year < start_year:
+            start_year, end_year = end_year, start_year
+
+    # owner-era clamp (only makes sense when teamId provided)
+    if era_only and team_id is not None:
+        owner_start = get_owner_start_year(int(team_id))
+        if owner_start:
+            start_year = max(int(start_year), int(owner_start))
+
+    session = SessionLocal()
     try:
-        if start_year is not None or end_year is not None:
-            if start_year is None:
-                start_year = year
-            if end_year is None:
-                end_year = start_year
-            if end_year < start_year:
-                start_year, end_year = end_year, start_year
+        # If caller asked for refresh, rebuild agg table rows for years in range (optional).
+        # I recommend: do NOT auto-rebuild here (keep scripts doing rebuilds), unless you want it.
+        # We'll ignore refresh in-route for now.
 
-            payload = get_opponent_matrix_multi_cached(
-                start_year,
-                end_year,
-                current_owner_era_only=era_only,
-                force_refresh=refresh,
-            )
-            rows = payload.get("rows", [])
-            result = {
-                "startYear": payload.get("startYear", start_year),
-                "endYear": payload.get("endYear", end_year),
-                "rows": rows,
-            }
-        else:
-            payload = get_opponent_matrix_cached(year, force_refresh=refresh)
-            rows = payload.get("rows", [])
-            result = {"year": year, "startYear": year, "endYear": year, "rows": rows}
-
-        rows_filtered = result["rows"]
+        q = session.query(OpponentMatrixAggYear).filter(
+            OpponentMatrixAggYear.league_id == LEAGUE_ID,
+            OpponentMatrixAggYear.year >= int(start_year),
+            OpponentMatrixAggYear.year <= int(end_year),
+        )
         if team_id is not None:
-            rows_filtered = [r for r in rows_filtered if r.get("teamId") == team_id]
+            q = q.filter(OpponentMatrixAggYear.team_id == int(team_id))
 
-        result["rows"] = rows_filtered
-        result["teamId"] = team_id
-        return jsonify(result)
+        db_rows = q.all()
+
+        if db_rows:
+            ui_rows = [_row_to_ui_shape(r) for r in db_rows]
+
+            # If range spans multiple years, merge rows by opponent
+            if int(start_year) != int(end_year):
+                ui_rows = _merge_ui_rows(ui_rows)
+
+            return jsonify(
+                {
+                    "year": int(year),
+                    "startYear": int(start_year),
+                    "endYear": int(end_year),
+                    "teamId": int(team_id) if team_id is not None else None,
+                    "rows": ui_rows,
+                    "source": "db_opponent_matrix_agg_year",
+                }
+            )
+
+        # DB empty → fallback to legacy cached compute (optional)
+        payload = get_opponent_matrix_multi_cached(
+            int(start_year),
+            int(end_year),
+            current_owner_era_only=era_only,
+            force_refresh=refresh,
+        )
+
+        rows = payload.get("rows", []) or []
+        if team_id is not None:
+            rows = [r for r in rows if int(r.get("teamId", 0)) == int(team_id)]
+
+        return jsonify(
+            {
+                "year": int(year),
+                "startYear": int(payload.get("startYear", start_year)),
+                "endYear": int(payload.get("endYear", end_year)),
+                "teamId": int(team_id) if team_id is not None else None,
+                "rows": rows,
+                "source": payload.get("source", "espn_cached_fallback"),
+            }
+        )
 
     except Exception as e:
+        session.rollback()
         return jsonify(
             {
                 "year": year,
-                "startYear": start_year or year,
-                "endYear": end_year or start_year or year,
+                "startYear": start_year,
+                "endYear": end_year,
                 "teamId": team_id,
                 "rows": [],
-                "source": "espn_fallback_error",
+                "source": "opponent_matrix_error",
                 "error": "Failed to compute opponent matrix",
                 "details": str(e),
             }
-        )
-
-
-@analysis_bp.route("/opponent-heatmap")
-def opponent_heatmap_api():
-    year = request.args.get("year", default=MAX_YEAR, type=int)
-    team_id = request.args.get("teamId", type=int)
-    refresh = request.args.get("refresh", default=0, type=int) == 1
-
-    if team_id is None:
-        return jsonify({"error": "Missing required parameter 'teamId'", "year": year}), 400
-
-    try:
-        raw_matrix = get_opponent_matrix_cached(year, force_refresh=refresh)
-        from analysis.services import reshape_opponent_matrix_for_team
-
-        return jsonify(reshape_opponent_matrix_for_team(team_id, raw_matrix))
-    except Exception as e:
-        return jsonify(
-            {
-                "year": year,
-                "teamId": team_id,
-                "rows": [],
-                "categories": CATEGORIES,
-                "source": "espn_fallback_error",
-                "error": "Failed to compute opponent heatmap",
-                "details": str(e),
-            }
-        )
+        ), 500
+    finally:
+        session.close()
 
 
 @analysis_bp.route("/opponent-zdiff")
 def opponent_zdiff_api():
     year = request.args.get("year", default=MAX_YEAR, type=int)
     team_id = request.args.get("teamId", type=int)
-    refresh = request.args.get("refresh", default=0, type=int) == 1
+    refresh = _bool_arg("refresh", False)
 
     try:
         payload = get_opponent_zdiff_matrix_cached(year, force_refresh=refresh)
-        rows = payload.get("rows", [])
+        rows = payload.get("rows", []) or []
         if team_id is not None:
-            rows = [r for r in rows if r.get("teamId") == team_id]
-        return jsonify({"year": year, "rows": rows})
+            rows = [r for r in rows if int(r.get("teamId", 0)) == int(team_id)]
+        return jsonify({"year": year, "teamId": team_id, "rows": rows})
     except Exception as e:
-        return jsonify(
-            {
-                "year": year,
-                "teamId": team_id,
-                "rows": [],
-                "source": "espn_fallback_error",
-                "error": "Failed to compute opponent z-diff matrix",
-                "details": str(e),
-            }
-        )
+        return jsonify({"year": year, "teamId": team_id, "rows": [], "error": "Failed to compute opponent z-diff matrix", "details": str(e)}), 500
 
 
 @analysis_bp.route("/opponent-matrix-multi")
 def opponent_matrix_multi_api():
     start_year = request.args.get("startYear", default=2019, type=int)
     end_year = request.args.get("endYear", default=MAX_YEAR, type=int)
-
     team_id = request.args.get("teamId", type=int)
 
-    # NOTE: match your frontend/querystring: currentOwnerEraOnly
     owner_era_only = request.args.get("currentOwnerEraOnly", default="false")
     owner_era_only = str(owner_era_only).lower() in ("1", "true", "yes", "y")
 
-    # NOTE: match your frontend/querystring: forceRefresh
-    refresh = request.args.get("forceRefresh", default="false")
-    refresh = str(refresh).lower() in ("1", "true", "yes", "y")
+    # if you want refresh to trigger a rebuild script later, keep it;
+    # for now we ignore it because agg is rebuilt by script
+    _ = request.args.get("forceRefresh", default="false")
 
-    if end_year < start_year:
-        start_year, end_year = end_year, start_year
+    if team_id is None:
+        return jsonify({"minYear": start_year, "maxYear": end_year, "rows": [], "error": "Missing teamId"}), 400
 
+    session = SessionLocal()
     try:
-        raw = get_opponent_matrix_multi_cached(
-            start_year,
-            end_year,
-            current_owner_era_only=owner_era_only,
-            force_refresh=refresh,
+        payload = get_opponent_matrix_from_agg_year(
+            session,
+            start_year=int(start_year),
+            end_year=int(end_year),
+            selected_espn_team_id=int(team_id),
+            current_owner_era_only=bool(owner_era_only),
         )
-
-        all_rows = raw.get("rows", [])
-
-        # Optional filter by teamId (only if provided)
-        rows = all_rows
-        if team_id is not None:
-            rows = [r for r in all_rows if int(r.get("teamId", 0)) == int(team_id)]
-
-        return jsonify(
-            {
-                # keep both naming conventions if you want
-                "startYear": int(raw.get("startYear", start_year)),
-                "endYear": int(raw.get("endYear", end_year)),
-                "minYear": int(raw.get("startYear", start_year)),
-                "maxYear": int(raw.get("endYear", end_year)),
-
-                "teamId": int(team_id) if team_id is not None else None,
-                "ownerEraOnly": bool(owner_era_only),
-                "rows": rows,
-                "source": raw.get("source"),
-            }
-        )
-
-    except Exception as e:
-        return jsonify(
-            {
-                "startYear": start_year,
-                "endYear": end_year,
-                "minYear": start_year,
-                "maxYear": end_year,
-                "teamId": team_id,
-                "ownerEraOnly": owner_era_only,
-                "rows": [],
-                "source": "route_error",
-                "error": "Failed to compute multi-year opponent matrix",
-                "details": str(e),
-            }
-        ), 500
+        payload["teamId"] = int(team_id)
+        payload["ownerEraOnly"] = bool(owner_era_only)
+        payload["source"] = "db_opponent_matrix_agg_year"
+        return jsonify(payload)
+    finally:
+        session.close()

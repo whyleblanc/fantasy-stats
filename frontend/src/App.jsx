@@ -242,13 +242,21 @@ function App() {
   };
 
   const handleRefresh = () => {
-    if (year && week) fetchWeekPowerData(year, week);
-    if (year) fetchSeasonPowerData(year);
+    // Only week-based tabs should hit week-power/season-power
+    if (tab === "overview" || tab === "dashboard") {
+      if (year && week) fetchWeekPowerData(year, week);
+      if (year) fetchSeasonPowerData(year);
+    }
+
+    // Standings is always “latest season”, so keep this global
     if (standingsYear) fetchLeagueStandings(standingsYear, true);
+
+    // History tab refreshes selected team history
     if (tab === "history" && historyTeamId && year) {
       fetchHistoryData(year, historyTeamId);
     }
-    // Opponent tab fetches its own data when year/team/range changes.
+
+    // Opponent tab refetches itself when its controls change.
   };
 
   // ---- effects ----
@@ -397,31 +405,33 @@ function App() {
         alignItems: "center",
       }}
     >
-      <div>
-        <label style={{ fontSize: "0.9rem" }}>Year</label>
-        <select
-          value={year}
-          onChange={(e) => setYear(Number(e.target.value))}
-          style={{
-            display: "block",
-            marginTop: "4px",
-            padding: "4px 8px",
-            borderRadius: "6px",
-            border: "1px solid #334155",
-            background: "#020617",
-            color: "#e5e7eb",
-            minWidth: "120px",
-          }}
-        >
-          {meta.years?.map((y) => (
-            <option key={y} value={y}>
-              {y}
-            </option>
-          ))}
-        </select>
-      </div>
-
       {tab !== "opponent" && (
+        <div>
+          <label style={{ fontSize: "0.9rem" }}>Year</label>
+          <select
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            style={{
+              display: "block",
+              marginTop: "4px",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid #334155",
+              background: "#020617",
+              color: "#e5e7eb",
+              minWidth: "120px",
+            }}
+          >
+            {meta.years?.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {(tab === "overview" || tab === "dashboard") && (
         <div>
           <label style={{ fontSize: "0.9rem" }}>Week</label>
           <select
@@ -488,13 +498,17 @@ function App() {
           {meta.leagueName || "Fantasy Power Dashboard"}
         </h1>
         <p style={{ margin: "4px 0 0", color: "#94a3b8" }}>
-          ESPN League {year} · Week {week}
-          {meta.currentWeek && meta.currentWeek !== week && (
-            <span
-              style={{ marginLeft: 8, fontSize: "0.8rem", color: "#64748b" }}
-            >
-              (Current matchup week: {meta.currentWeek})
-            </span>
+          ESPN League {year}
+          {(tab === "overview" || tab === "dashboard") && (
+            <>
+              {" "}
+              · Week {week}
+              {meta.currentWeek && meta.currentWeek !== week && (
+                <span style={{ marginLeft: 8, fontSize: "0.8rem", color: "#64748b" }}>
+                  (Current matchup week: {meta.currentWeek})
+                </span>
+              )}
+            </>
           )}
         </p>
       </header>

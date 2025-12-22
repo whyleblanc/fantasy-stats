@@ -72,6 +72,13 @@ class SeasonTeamMetrics(Base):
         UniqueConstraint("league_id", "year", "team_id", name="uix_league_year_team"),
     )
 
+        # db.py
+    # ...
+    # Ensure aggregate models are registered with Base metadata
+    try:
+        import models_aggregates  # noqa: F401
+    except Exception:
+        pass
 
 def init_db():
     Base.metadata.create_all(bind=engine)

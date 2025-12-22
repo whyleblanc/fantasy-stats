@@ -9,29 +9,17 @@ function HistoryControls({
   weekLimit,
   onChangeWeekLimit,
 }) {
+  const cats = Array.isArray(categories) ? categories : []; // ✅ add this
+
   const handleSlider = (e) => {
     const value = Number(e.target.value);
     onChangeWeekLimit(value || null);
   };
 
   return (
-    <section
-      style={{
-        marginBottom: "8px",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "12px",
-        alignItems: "center",
-      }}
-    >
+    <section style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
       <div>
-        <label
-          style={{
-            fontSize: "0.85rem",
-            display: "block",
-            marginBottom: 4,
-          }}
-        >
+        <label style={{ fontSize: "0.85rem", display: "block", marginBottom: 4 }}>
           Chart Metric
         </label>
         <select
@@ -54,13 +42,7 @@ function HistoryControls({
 
       {chartMode === "category" && (
         <div>
-          <label
-            style={{
-              fontSize: "0.85rem",
-              display: "block",
-              marginBottom: 4,
-            }}
-          >
+          <label style={{ fontSize: "0.85rem", display: "block", marginBottom: 4 }}>
             Category
           </label>
           <select
@@ -86,13 +68,7 @@ function HistoryControls({
 
       {maxWeekForSlider > 0 && (
         <div style={{ minWidth: "220px" }}>
-          <label
-            style={{
-              fontSize: "0.85rem",
-              display: "block",
-              marginBottom: 4,
-            }}
-          >
+          <label style={{ fontSize: "0.85rem", display: "block", marginBottom: 4 }}>
             Week range (1 → {weekLimit || maxWeekForSlider})
           </label>
           <input

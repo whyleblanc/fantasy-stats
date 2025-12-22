@@ -31,17 +31,6 @@ function HistoryTab({
   // chart state
   const [chartMode, setChartMode] = useState("totalZ"); // 'totalZ' | 'rank' | 'category'
   const [chartCategory, setChartCategory] = useState(cats[0] || "FG%");
-  const [weekLimit, setWeekLimit] = useState(null);
-
-  // reset week limit when history changes
-  useEffect(() => {
-    if (!history.length) {
-      setWeekLimit(null);
-      return;
-    }
-    const maxWeek = Math.max(...history.map((h) => h.week || 0));
-    setWeekLimit(maxWeek);
-  }, [history, year]);
 
   // comparison fetch
   const fetchComparisonHistory = async (teamId) => {
@@ -71,27 +60,14 @@ function HistoryTab({
     fetchComparisonHistory(teamId);
   };
 
-  // filtered by week limit
-  const primaryFiltered = useMemo(() => {
-    if (!history.length) return [];
-    if (!weekLimit) return history;
-    return history.filter((h) => (h.week || 0) <= weekLimit);
-  }, [history, weekLimit]);
-
-  const comparisonFiltered = useMemo(() => {
-    const compHist = comparisonHistoryData?.history || [];
-    if (!compHist.length) return [];
-    if (!weekLimit) return compHist;
-    return compHist.filter((h) => (h.week || 0) <= weekLimit);
-  }, [comparisonHistoryData, weekLimit]);
-
   // chart data
   const chartData = useMemo(() => {
-    if (!primaryFiltered.length) return [];
+    if (!history.length) return [];
 
-    const compMap = new Map(comparisonFiltered.map((h) => [h.week, h]));
+    const compHist = comparisonHistoryData?.history || [];
+    const compMap = new Map(compHist.map((h) => [h.week, h]));
 
-    return primaryFiltered.map((h) => {
+    return history.map((h) => {
       const week = h.week;
       const comp = compMap.get(week);
 
@@ -142,7 +118,7 @@ function HistoryTab({
         compCatZ,
       };
     });
-  }, [primaryFiltered, comparisonFiltered, chartCategory]);
+  }, [history, comparisonHistoryData, chartCategory]);
 
   // summary stats
   const summary = useMemo(() => {
@@ -173,11 +149,6 @@ function HistoryTab({
     const finalRankEntry = history[history.length - 1];
 
     return { bestWeek: best, worstWeek: worst, avgRank, finalRank: finalRankEntry?.rank ?? null };
-  }, [history]);
-
-  const maxWeekForSlider = useMemo(() => {
-    if (!history.length) return 0;
-    return Math.max(...history.map((h) => h.week || 0));
   }, [history]);
 
   return (
@@ -218,9 +189,6 @@ function HistoryTab({
             chartCategory={chartCategory}
             onChangeChartCategory={setChartCategory}
             categories={cats}
-            maxWeekForSlider={maxWeekForSlider}
-            weekLimit={weekLimit}
-            onChangeWeekLimit={setWeekLimit}
           />
 
           <HistoryChart

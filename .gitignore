@@ -22,10 +22,6 @@ frontend/dist/
 .idea/
 .vscode/
 
-# Database files (catch ALL .db files anywhere)
-*.db
-**/*.db
-
 # Explicit DB file
 fantasy_stats.db
 

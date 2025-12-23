@@ -14,7 +14,7 @@ from analysis import (
 from analysis.constants import CATEGORIES, CAT_TO_DB_COL
 from analysis.owners import build_owners_map
 from analysis.owners import get_owner_start_year
-from models_aggregates import OpponentMatrixAggYear
+from models_aggregates import TeamHistoryAgg, OpponentMatrixAggYear
 
 from db import SessionLocal, WeekTeamStats
 from models_normalized import StatWeekly, Team, Matchup  # StatSeason only needed if you use season fallback
@@ -184,6 +184,29 @@ def _completed_weeks_from_matchups(session, season: int) -> List[int]:
         .all()
     )
     return [int(w[0]) for w in rows if w[0] is not None]
+
+
+def _meta_for_season(session, season: int) -> dict:
+    weeks = _completed_weeks_from_matchups(session, int(season))
+    return {
+        "season": int(season),
+        "weeksIncluded": weeks,
+        "isPartial": True if weeks else False,
+        "latestWeek": max(weeks) if weeks else None,
+    }
+
+
+def _meta_for_range(session, start_year: int, end_year: int) -> dict:
+    start_year, end_year = int(start_year), int(end_year)
+    years = list(range(start_year, end_year + 1))
+    latest_by_year = {y: _meta_for_season(session, y)["latestWeek"] for y in years}
+    return {
+        "startYear": start_year,
+        "endYear": end_year,
+        "years": years,
+        "latestWeekByYear": latest_by_year,
+        "isRange": True,
+    }
 
 
 def _category_name_map() -> Dict[str, str]:
@@ -732,6 +755,7 @@ def team_history_api():
             payload = get_team_history_from_agg(session, year=year, team_id=team_id, categories=categories)
 
         payload["source"] = "db_team_history_agg"
+        payload["meta"] = _meta_for_season(session, year)
         return jsonify(payload)
 
     except Exception as e:
@@ -815,6 +839,7 @@ def opponent_matrix_api():
                     "teamId": int(team_id) if team_id is not None else None,
                     "rows": ui_rows,
                     "source": "db_opponent_matrix_agg_year",
+                    "meta": _meta_for_range(session, int(start_year), int(end_year)),
                 }
             )
 
@@ -838,6 +863,8 @@ def opponent_matrix_api():
                 "teamId": int(team_id) if team_id is not None else None,
                 "rows": rows,
                 "source": payload.get("source", "espn_cached_fallback"),
+                "meta": _meta_for_range(session, int(payload.get("startYear", start_year)),
+                               int(payload.get("endYear", end_year))),
             }
         )
 
@@ -903,6 +930,46 @@ def opponent_matrix_multi_api():
         payload["teamId"] = int(team_id)
         payload["ownerEraOnly"] = bool(owner_era_only)
         payload["source"] = "db_opponent_matrix_agg_year"
+        payload["meta"] = _meta_for_range(session, int(start_year), int(end_year))
         return jsonify(payload)
+    finally:
+        session.close()
+
+@analysis_bp.route("/health")
+def analysis_health_api():
+    year = request.args.get("year", default=MAX_YEAR, type=int)
+
+    session = SessionLocal()
+    try:
+        completed_weeks = _completed_weeks_from_matchups(session, year)
+        latest_week = max(completed_weeks) if completed_weeks else None
+
+        week_team_stats_rows = session.query(func.count(WeekTeamStats.id)).filter(
+            WeekTeamStats.league_id == LEAGUE_ID,
+            WeekTeamStats.year == year,
+        ).scalar() or 0
+
+        team_history_rows = session.query(func.count(TeamHistoryAgg.id)).filter(
+            TeamHistoryAgg.league_id == LEAGUE_ID,
+            TeamHistoryAgg.year == year,
+        ).scalar() or 0
+
+        opponent_rows = session.query(func.count(OpponentMatrixAggYear.id)).filter(
+            OpponentMatrixAggYear.league_id == LEAGUE_ID,
+            OpponentMatrixAggYear.year == year,
+        ).scalar() or 0
+
+        return jsonify({
+            "year": int(year),
+            "completedWeeks": completed_weeks,
+            "latestWeek": latest_week,
+            "counts": {
+                "weekTeamStats": int(week_team_stats_rows),
+                "teamHistoryAgg": int(team_history_rows),
+                "opponentMatrixAggYear": int(opponent_rows),
+            },
+            "status": "OK",
+            "source": "db_health",
+        })
     finally:
         session.close()

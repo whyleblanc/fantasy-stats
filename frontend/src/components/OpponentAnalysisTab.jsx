@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getOpponentMatrixMulti } from "../api/client";
+import { getOpponentMatrixMulti, getAnalysisHealth } from "../api/client";
 import { thStyle, tdStyle } from "../ui/table";
 
 const METRIC_MODES = [
@@ -35,11 +35,8 @@ function getHeatColor(value, mode, stats) {
     const norm = Math.min(Math.abs(value) / maxAbs, 1);
     const alpha = 0.15 + 0.6 * norm;
 
-    if (value >= 0) {
-      return `rgba(34,197,94,${alpha})`;
-    } else {
-      return `rgba(239,68,68,${alpha})`;
-    }
+    if (value >= 0) return `rgba(34,197,94,${alpha})`;
+    return `rgba(239,68,68,${alpha})`;
   }
 
   const v = clamp01(value);
@@ -72,6 +69,10 @@ export default function OpponentAnalysisTab({
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // health
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState(null);
 
   const [minYear, setMinYear] = useState(null);
   const [maxYear, setMaxYear] = useState(null);
@@ -123,10 +124,65 @@ export default function OpponentAnalysisTab({
     });
   }, [yearRange]);
 
-  const effectiveCategories = useMemo(
-    () => categories || [],
-    [categories],
-  );
+  // -------- health fetch --------
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHealth() {
+      try {
+        setHealthError(null);
+        const h = await getAnalysisHealth(year);
+        if (!cancelled) setHealth(h);
+      } catch (e) {
+        if (!cancelled) setHealthError(String(e?.message || e));
+      }
+    }
+
+    if (year) loadHealth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [year]);
+
+  const healthBanner = useMemo(() => {
+    if (healthError) {
+      return (
+        <div style={{ marginBottom: 12, color: "#fca5a5", fontSize: "0.9rem" }}>
+          Health check failed: {healthError}
+        </div>
+      );
+    }
+
+    if (!health) return null;
+
+    const latestWeek = health.latestWeek;
+    const oppRows = health.counts?.opponentMatrixAggYear ?? 0;
+
+    if (!latestWeek) {
+      return (
+        <div style={{ marginBottom: 12, color: "#fbbf24", fontSize: "0.9rem" }}>
+          No completed weeks found for {year} yet (latestWeek is null). Opponent
+          matrix will be empty.
+        </div>
+      );
+    }
+
+    if (oppRows === 0) {
+      return (
+        <div style={{ marginBottom: 12, color: "#fbbf24", fontSize: "0.9rem" }}>
+          Opponent matrix agg table has 0 rows for {year}. Rebuild it:
+          <code style={{ marginLeft: 8 }}>
+            python -m scripts.rebuild_opponent_matrix_agg_year --year {year} --force
+          </code>
+        </div>
+      );
+    }
+
+    return null;
+  }, [health, healthError, year]);
+
+  const effectiveCategories = useMemo(() => categories || [], [categories]);
 
   const minYearOptions = useMemo(() => {
     if (!yearRange.length) return [];
@@ -143,11 +199,10 @@ export default function OpponentAnalysisTab({
   useEffect(() => {
     if (selectedTeamId || !teamOptions.length) return;
     const first = teamOptions[0];
-    if (first?.teamId && onChangeTeam) {
-      onChangeTeam(first.teamId);
-    }
+    if (first?.teamId && onChangeTeam) onChangeTeam(first.teamId);
   }, [teamOptions, selectedTeamId, onChangeTeam]);
 
+  // -------- opponent matrix fetch --------
   useEffect(() => {
     if (!selectedTeamId || !minYear || !maxYear) {
       setData(null);
@@ -191,7 +246,6 @@ export default function OpponentAnalysisTab({
     rowLabels,
     values,
     colorMode,
-    valueFormatter,
     recordByOpponent,
     rangeLabel,
   } = useMemo(() => {
@@ -200,7 +254,6 @@ export default function OpponentAnalysisTab({
       rowLabels: [],
       values: [],
       colorMode: metricMode === "zDiff" ? "zDiff" : "winPct",
-      valueFormatter: () => "-",
       recordByOpponent: {},
       rangeLabel: "",
     };
@@ -260,7 +313,6 @@ export default function OpponentAnalysisTab({
         rowLabels: effectiveCategories,
         values: vals,
         colorMode: "winPct",
-        valueFormatter: formatPct,
         recordByOpponent: recordMap,
         rangeLabel: label,
       };
@@ -293,7 +345,6 @@ export default function OpponentAnalysisTab({
         rowLabels: effectiveCategories,
         values: zMatrix,
         colorMode: "zDiff",
-        valueFormatter: formatZ,
         recordByOpponent: recordMap,
         rangeLabel: label,
       };
@@ -317,7 +368,6 @@ export default function OpponentAnalysisTab({
         rowLabels: ["Record"],
         values: vals,
         colorMode: "winPct",
-        valueFormatter: formatPct,
         recordByOpponent: recordMap,
         rangeLabel: label,
       };
@@ -395,14 +445,9 @@ export default function OpponentAnalysisTab({
         <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "8px" }}>
           Opponent Analysis · {year}
         </h2>
+        {healthBanner}
         {renderTeamSelector()}
-        <div
-          style={{
-            marginTop: "12px",
-            fontSize: "0.8rem",
-            color: "#9ca3af",
-          }}
-        >
+        <div style={{ marginTop: "12px", fontSize: "0.8rem", color: "#9ca3af" }}>
           Pick a team to see head-to-head category and record edges vs each
           opponent.
         </div>
@@ -423,13 +468,7 @@ export default function OpponentAnalysisTab({
         }}
       >
         <div>
-          <h2
-            style={{
-              fontSize: "1rem",
-              fontWeight: 600,
-              marginBottom: "4px",
-            }}
-          >
+          <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "4px" }}>
             Opponent Analysis ·{" "}
             {selectedTeam?.teamName || `Team ${selectedTeamId}`}{" "}
             {rangeLabel ? `· ${rangeLabel}` : ""}
@@ -448,31 +487,16 @@ export default function OpponentAnalysisTab({
             flexWrap: "wrap",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              fontSize: "0.8rem",
-              gap: "4px",
-            }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", fontSize: "0.8rem", gap: "4px" }}>
             <span>Years</span>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <select
                 value={minYear || ""}
                 onChange={(e) => {
                   const val = e.target.value ? Number(e.target.value) : null;
                   if (val == null) return;
                   setMinYear(val);
-                  if (maxYear && val > maxYear) {
-                    setMaxYear(val);
-                  }
+                  if (maxYear && val > maxYear) setMaxYear(val);
                 }}
                 style={{
                   padding: "4px 8px",
@@ -496,9 +520,7 @@ export default function OpponentAnalysisTab({
                   const val = e.target.value ? Number(e.target.value) : null;
                   if (val == null) return;
                   setMaxYear(val);
-                  if (minYear && val < minYear) {
-                    setMinYear(val);
-                  }
+                  if (minYear && val < minYear) setMinYear(val);
                 }}
                 style={{
                   padding: "4px 8px",
@@ -518,14 +540,7 @@ export default function OpponentAnalysisTab({
             </div>
           </div>
 
-          <label
-            style={{
-              fontSize: "0.8rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: "4px",
-            }}
-          >
+          <label style={{ fontSize: "0.8rem", display: "flex", flexDirection: "column", gap: "4px" }}>
             Metric
             <select
               value={metricMode}
@@ -571,6 +586,8 @@ export default function OpponentAnalysisTab({
         </div>
       </header>
 
+      {healthBanner}
+
       {loading && (
         <div style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
           Loading opponent analysis…
@@ -578,9 +595,7 @@ export default function OpponentAnalysisTab({
       )}
 
       {error && (
-        <div
-          style={{ fontSize: "0.8rem", color: "#f97373", marginBottom: "8px" }}
-        >
+        <div style={{ fontSize: "0.8rem", color: "#f97373", marginBottom: "8px" }}>
           {error}
         </div>
       )}
@@ -650,12 +665,8 @@ export default function OpponentAnalysisTab({
                         const bg = getHeatColor(val, colorMode, stats);
                         const title =
                           colorMode === "zDiff"
-                            ? `${label} vs ${opponents[colIdx]}: ${formatZ(
-                                val,
-                              )}`
-                            : `${label} vs ${opponents[colIdx]}: ${formatPct(
-                                val,
-                              )}`;
+                            ? `${label} vs ${opponents[colIdx]}: ${formatZ(val)}`
+                            : `${label} vs ${opponents[colIdx]}: ${formatPct(val)}`;
                         return (
                           <td
                             key={colIdx}
@@ -669,9 +680,7 @@ export default function OpponentAnalysisTab({
                               whiteSpace: "nowrap",
                             }}
                           >
-                            {colorMode === "zDiff"
-                              ? formatZ(val)
-                              : formatPct(val)}
+                            {colorMode === "zDiff" ? formatZ(val) : formatPct(val)}
                           </td>
                         );
                       })}
@@ -682,38 +691,21 @@ export default function OpponentAnalysisTab({
             </table>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "6px",
-              fontSize: "0.7rem",
-              color: "#9ca3af",
-            }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "0.7rem", color: "#9ca3af" }}>
             {colorMode === "zDiff" ? (
               <div>
-                Color scale: negative z (red) = they’ve outplayed you; positive
-                z (green) = you’ve outplayed them, based on per-category
-                head-to-head score differences.
+                Color scale: negative z (red) = they’ve outplayed you; positive z
+                (green) = you’ve outplayed them, based on per-category head-to-head
+                score differences.
               </div>
             ) : (
-              <div>
-                Color scale: red = low win%, green = high win%, neutral ≈ 50%.
-              </div>
+              <div>Color scale: red = low win%, green = high win%, neutral ≈ 50%.</div>
             )}
 
             {Object.keys(recordByOpponent).length > 0 && (
               <div>
                 Matchup summary (W–L–T, win%) for the selected seasons:
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "8px 16px",
-                    marginTop: "4px",
-                  }}
-                >
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px", marginTop: "4px" }}>
                   {opponents.map((opp) => {
                     const rec = recordByOpponent[opp];
                     if (!rec) return null;
@@ -721,8 +713,7 @@ export default function OpponentAnalysisTab({
                       <div key={opp} style={{ color: "#cbd5f5" }}>
                         <span style={{ color: "#9ca3af" }}>{opp}:</span>{" "}
                         {rec.wins}-{rec.losses}
-                        {rec.ties ? `-${rec.ties}` : ""} (
-                        {formatPct(rec.winPct)})
+                        {rec.ties ? `-${rec.ties}` : ""} ({formatPct(rec.winPct)})
                       </div>
                     );
                   })}

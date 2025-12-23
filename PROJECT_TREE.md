@@ -64,6 +64,7 @@
 │   ├── GPT_PROJECT_CONTEXT.md
 │   ├── GPT_PROJECT_TREE.md
 │   └── README.md
+├── models_aggregates.py
 ├── models_normalized.py
 ├── pytest.ini
 ├── requirements.txt
@@ -78,6 +79,7 @@
 │   ├── pull_latest.sh
 │   ├── pull_latest_week.py
 │   ├── pull_week.py
+│   ├── rebuild_opponent_matrix_agg_year.py
 │   ├── temp_shell.py
 │   └── update_project_tree.sh
 ├── tests
@@ -102,6 +104,10 @@
         ├── cache_week_team_stats.py
         ├── espn_ingest.py
         ├── loaders.py
-        └── standings_cache.py
+        ├── opponent_matrix_agg.py
+        ├── opponent_matrix_agg_year.py
+        ├── opponent_matrix_db.py
+        ├── standings_cache.py
+        └── team_history_agg.py
 
-17 directories, 88 files
+17 directories, 94 files

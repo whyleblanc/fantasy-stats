@@ -151,6 +151,10 @@ function getOpponentMatrixMulti(
   });
 }
 
+function getAnalysisHealth(year) {
+  return fetchJson("/api/analysis/health", { year });
+}
+
 // ------------------------
 // Unified API object
 // ------------------------
@@ -165,6 +169,7 @@ export const api = {
   getOpponentMatrix,
   getOpponentHeatmap,
   getOpponentMatrixMulti,
+  getAnalysisHealth,
 };
 
 // Also export individual functions if needed
@@ -179,4 +184,5 @@ export {
   getOpponentMatrix,
   getOpponentHeatmap,
   getOpponentMatrixMulti,
+  getAnalysisHealth,
 };

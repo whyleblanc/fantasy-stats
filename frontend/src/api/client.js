@@ -155,6 +155,24 @@ function getAnalysisHealth(year) {
   return fetchJson("/api/analysis/health", { year });
 }
 
+function getAwards({
+  scope = "league",
+  mode = "summary",
+  year = "all_time",
+  teamId = null,
+  ownerCode = null,
+  currentOwnerEraOnly = true,
+} = {}) {
+  return fetchJson("/api/analysis/awards", {
+    scope,
+    mode,
+    year,
+    teamId,
+    ownerCode,
+    currentOwnerEraOnly: currentOwnerEraOnly ? 1 : 0,
+  });
+}
+
 // ------------------------
 // Unified API object
 // ------------------------
@@ -170,6 +188,7 @@ export const api = {
   getOpponentHeatmap,
   getOpponentMatrixMulti,
   getAnalysisHealth,
+  getAwards,
 };
 
 // Also export individual functions if needed
@@ -185,4 +204,6 @@ export {
   getOpponentHeatmap,
   getOpponentMatrixMulti,
   getAnalysisHealth,
+  getAwards,
 };
+

@@ -7,6 +7,8 @@ import DashboardTab from "./components/DashboardTab";
 import HistoryTab from "./components/HistoryTab";
 import OpponentAnalysisTab from "./components/OpponentAnalysisTab";
 import ErrorBoundary from "./components/ErrorBoundary";
+import AwardsTab from "./components/AwardsTab";
+import { getAwards } from "./api/client";
 
 import {
   getMeta,
@@ -61,11 +63,41 @@ function App() {
     return null; // <— IMPORTANT: don’t default to selected year
   }, [meta.years]);
 
+  // awards tab
+  const [awardsPayload, setAwardsPayload] = useState(null);
+  const [loadingAwards, setLoadingAwards] = useState(false);
+
+  const fetchAwards = async () => {
+    setLoadingAwards(true);
+    setError(null);
+    try {
+      const data = await getAwards({
+        scope: "league",
+        year: "all_time",
+        mode: "summary",
+        currentOwnerEraOnly: true,
+      });
+      setAwardsPayload(data);
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Awards error");
+      setAwardsPayload(null);
+    } finally {
+      setLoadingAwards(false);
+    }
+  };
+
   useEffect(() => {
     if (!standingsYear) return;          // <— prevents the initial 2025 call
     fetchLeagueStandings(standingsYear);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standingsYear]);
+
+    useEffect(() => {
+    if (tab !== "awards") return;
+    fetchAwards();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // ---- API helpers ----
 
@@ -370,6 +402,7 @@ function App() {
         { id: "dashboard", label: "Dashboard" },
         { id: "history", label: "Team History" },
         { id: "opponent", label: "Opponent Analysis" },
+        { id: "awards", label: "Awards" },
       ].map((t) => {
         const active = tab === t.id;
         return (
@@ -395,92 +428,97 @@ function App() {
     </div>
   );
 
-  const renderFilterStrip = () => (
-    <section
-      style={{
-        marginBottom: "16px",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "12px",
-        alignItems: "center",
-      }}
-    >
-      {tab !== "opponent" && (
-        <div>
-          <label style={{ fontSize: "0.9rem" }}>Year</label>
-          <select
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            style={{
-              display: "block",
-              marginTop: "4px",
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid #334155",
-              background: "#020617",
-              color: "#e5e7eb",
-              minWidth: "120px",
-            }}
-          >
-            {meta.years?.map((y) => (
-              <option key={y} value={y}>
-                {y}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+  const renderFilterStrip = () => {
+    // Awards has its own filter bar; hide the global Year/Week/Refresh strip.
+    if (tab === "awards") return null;
 
-      {(tab === "overview" || tab === "dashboard") && (
-        <div>
-          <label style={{ fontSize: "0.9rem" }}>Week</label>
-          <select
-            value={week}
-            onChange={(e) => setWeek(Number(e.target.value))}
-            style={{
-              display: "block",
-              marginTop: "4px",
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid #334155",
-              background: "#020617",
-              color: "#e5e7eb",
-              minWidth: "90px",
-            }}
-          >
-            {meta.weeks?.map((w) => (
-              <option key={w} value={w}>
-                {w}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <button
-        onClick={handleRefresh}
+    return (
+      <section
         style={{
-          marginTop: "18px",
-          padding: "6px 16px",
-          borderRadius: "999px",
-          border: "none",
-          background:
-            "linear-gradient(135deg, rgba(56,189,248,0.9), rgba(59,130,246,0.9))",
-          color: "#0f172a",
-          fontWeight: 600,
-          cursor: "pointer",
+          marginBottom: "16px",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "12px",
+          alignItems: "center",
         }}
       >
-        Refresh
-      </button>
+        {tab !== "opponent" && (
+          <div>
+            <label style={{ fontSize: "0.9rem" }}>Year</label>
+            <select
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+              style={{
+                display: "block",
+                marginTop: "4px",
+                padding: "4px 8px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                background: "#020617",
+                color: "#e5e7eb",
+                minWidth: "120px",
+              }}
+            >
+              {meta.years?.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
-      {error && (
-        <span style={{ color: "#fca5a5", fontSize: "0.85rem" }}>
-          {error}
-        </span>
-      )}
-    </section>
-  );
+        {(tab === "overview" || tab === "dashboard") && (
+          <div>
+            <label style={{ fontSize: "0.9rem" }}>Week</label>
+            <select
+              value={week}
+              onChange={(e) => setWeek(Number(e.target.value))}
+              style={{
+                display: "block",
+                marginTop: "4px",
+                padding: "4px 8px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                background: "#020617",
+                color: "#e5e7eb",
+                minWidth: "90px",
+              }}
+            >
+              {meta.weeks?.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <button
+          onClick={handleRefresh}
+          style={{
+            marginTop: "18px",
+            padding: "6px 16px",
+            borderRadius: "999px",
+            border: "none",
+            background:
+              "linear-gradient(135deg, rgba(56,189,248,0.9), rgba(59,130,246,0.9))",
+            color: "#0f172a",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Refresh
+        </button>
+
+        {error && (
+          <span style={{ color: "#fca5a5", fontSize: "0.85rem" }}>
+            {error}
+          </span>
+        )}
+      </section>
+    );
+  };
 
   // ---- render root ----
   return (
@@ -570,7 +608,15 @@ function App() {
           onChangeTeam={handleHistoryTeamChange}
           categories={CATEGORIES}
         />
+
       )}
+
+    {!loadingMeta && tab === "awards" && (
+      <AwardsTab
+        metaYears={meta.years}
+        seasonPower={seasonPower}
+      />
+    )}
     </div>
   );
 }

@@ -74,12 +74,14 @@
 │   ├── backfill_team_weekly.py
 │   ├── backfill_weekly_from_boxscores.py
 │   ├── backfill_weekteamstats.py
+│   ├── correct_recent_weeks.py
 │   ├── inspect_espn_week_payload.py
 │   ├── print_owners_2025.py
 │   ├── pull_latest.sh
 │   ├── pull_latest_week.py
 │   ├── pull_week.py
 │   ├── rebuild_opponent_matrix_agg_year.py
+│   ├── rebuild_team_history_agg_year.py
 │   ├── temp_shell.py
 │   └── update_project_tree.sh
 ├── tests
@@ -110,4 +112,4 @@
         ├── standings_cache.py
         └── team_history_agg.py
 
-17 directories, 94 files
+17 directories, 96 files
